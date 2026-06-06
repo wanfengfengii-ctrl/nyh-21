@@ -1,4 +1,4 @@
-import type { BeaconLight, MaintenanceRecord, LampshadeInspection, LightSourceReplacement, ExhibitionStatusHistory, BorrowRequest, RepairOrder, LampshadeStatus, ExhibitionStatus } from './types';
+import type { BeaconLight, MaintenanceRecord, LampshadeInspection, LightSourceReplacement, ExhibitionStatusHistory, BorrowRequest, RepairOrder, LampshadeStatus, ExhibitionStatus, EnvMonitorPoint, EnvMonitorRecord, EnvThresholdConfig, EnvAlert, RectificationTask, EnvMonitorDataType, SaltFogLevel } from './types';
 
 export function generateId(): string {
 	return Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
@@ -290,4 +290,231 @@ export function getDefaultExhibitionStatus(lampshadeStatus: LampshadeStatus): Ex
 		return '维护中';
 	}
 	return '可展出';
+}
+
+export function validateEnvMonitorPoint(point: Partial<EnvMonitorPoint>, existingPoints: EnvMonitorPoint[], currentId?: string): ValidationResult {
+	const errors: string[] = [];
+
+	if (!point.code || point.code.trim() === '') {
+		errors.push('监测点编号不能为空');
+	} else {
+		const duplicate = existingPoints.find(p => p.code === point.code && p.id !== currentId);
+		if (duplicate) {
+			errors.push('监测点编号不能重复');
+		}
+	}
+
+	if (!point.name || point.name.trim() === '') {
+		errors.push('监测点名称不能为空');
+	}
+
+	if (!point.type) {
+		errors.push('请选择监测点类型');
+	}
+
+	if (!point.location || point.location.trim() === '') {
+		errors.push('位置信息不能为空');
+	}
+
+	if (!point.museumId) {
+		errors.push('请选择所属馆区');
+	}
+
+	return { valid: errors.length === 0, errors };
+}
+
+export function validateEnvMonitorRecord(record: Partial<EnvMonitorRecord>): ValidationResult {
+	const errors: string[] = [];
+
+	if (!record.pointId) {
+		errors.push('请选择监测点');
+	}
+
+	if (record.temperature === undefined || record.temperature === null) {
+		errors.push('温度值不能为空');
+	} else if (record.temperature < -50 || record.temperature > 100) {
+		errors.push('温度值超出合理范围');
+	}
+
+	if (record.humidity === undefined || record.humidity === null) {
+		errors.push('湿度值不能为空');
+	} else if (record.humidity < 0 || record.humidity > 100) {
+		errors.push('湿度值必须在0-100%之间');
+	}
+
+	if (record.illuminance === undefined || record.illuminance === null) {
+		errors.push('照度值不能为空');
+	} else if (record.illuminance < 0) {
+		errors.push('照度值不能为负数');
+	}
+
+	if (record.vibration === undefined || record.vibration === null) {
+		errors.push('震动值不能为空');
+	} else if (record.vibration < 0) {
+		errors.push('震动值不能为负数');
+	}
+
+	if (!record.saltFogLevel) {
+		errors.push('请选择盐雾等级');
+	}
+
+	if (!record.collectedAt || record.collectedAt.trim() === '') {
+		errors.push('采集时间不能为空');
+	}
+
+	return { valid: errors.length === 0, errors };
+}
+
+export function validateThresholdConfig(config: Partial<EnvThresholdConfig>): ValidationResult {
+	const errors: string[] = [];
+
+	if (!config.pointId) {
+		errors.push('请选择监测点');
+	}
+
+	if (config.temperatureMin === undefined || config.temperatureMin === null) {
+		errors.push('温度下限不能为空');
+	}
+	if (config.temperatureMax === undefined || config.temperatureMax === null) {
+		errors.push('温度上限不能为空');
+	}
+	if (config.temperatureMin !== undefined && config.temperatureMax !== undefined && config.temperatureMin >= config.temperatureMax) {
+		errors.push('温度下限必须小于上限');
+	}
+
+	if (config.humidityMin === undefined || config.humidityMin === null) {
+		errors.push('湿度下限不能为空');
+	}
+	if (config.humidityMax === undefined || config.humidityMax === null) {
+		errors.push('湿度上限不能为空');
+	}
+	if (config.humidityMin !== undefined && config.humidityMax !== undefined && config.humidityMin >= config.humidityMax) {
+		errors.push('湿度下限必须小于上限');
+	}
+
+	if (config.illuminanceMax === undefined || config.illuminanceMax === null) {
+		errors.push('照度上限不能为空');
+	} else if (config.illuminanceMax < 0) {
+		errors.push('照度上限不能为负数');
+	}
+
+	if (config.vibrationMax === undefined || config.vibrationMax === null) {
+		errors.push('震动上限不能为空');
+	} else if (config.vibrationMax < 0) {
+		errors.push('震动上限不能为负数');
+	}
+
+	if (!config.saltFogMaxLevel) {
+		errors.push('请选择盐雾最大等级');
+	}
+
+	return { valid: errors.length === 0, errors };
+}
+
+export function validateRectificationTask(task: Partial<RectificationTask>): ValidationResult {
+	const errors: string[] = [];
+
+	if (!task.pointId) {
+		errors.push('请选择监测点');
+	}
+
+	if (!task.title || task.title.trim() === '') {
+		errors.push('整改任务标题不能为空');
+	}
+
+	if (!task.description || task.description.trim() === '') {
+		errors.push('整改任务描述不能为空');
+	}
+
+	if (!task.riskLevel) {
+		errors.push('请选择风险等级');
+	}
+
+	if (task.dueDate && task.createdAt && isDateBefore(task.dueDate, task.createdAt)) {
+		errors.push('截止日期不能早于创建日期');
+	}
+
+	return { valid: errors.length === 0, errors };
+}
+
+export function checkEnvThreshold(record: EnvMonitorRecord, config: EnvThresholdConfig): { alerts: { type: EnvMonitorDataType; level: '低风险' | '中风险' | '高风险'; actual: string; threshold: string; desc: string }[] } {
+	const alerts: { type: EnvMonitorDataType; level: '低风险' | '中风险' | '高风险'; actual: string; threshold: string; desc: string }[] = [];
+
+	const tempRange = config.temperatureMax - config.temperatureMin;
+	if (record.temperature < config.temperatureMin || record.temperature > config.temperatureMax) {
+		const deviation = Math.max(config.temperatureMin - record.temperature, record.temperature - config.temperatureMax);
+		const level = deviation > tempRange * 0.5 ? '高风险' : deviation > tempRange * 0.2 ? '中风险' : '低风险';
+		alerts.push({
+			type: '温度',
+			level,
+			actual: `${record.temperature}°C`,
+			threshold: `${config.temperatureMin}-${config.temperatureMax}°C`,
+			desc: `温度${record.temperature > config.temperatureMax ? '超高' : '过低'}，当前${record.temperature}°C，阈值范围${config.temperatureMin}-${config.temperatureMax}°C`
+		});
+	}
+
+	const humRange = config.humidityMax - config.humidityMin;
+	if (record.humidity < config.humidityMin || record.humidity > config.humidityMax) {
+		const deviation = Math.max(config.humidityMin - record.humidity, record.humidity - config.humidityMax);
+		const level = deviation > humRange * 0.5 ? '高风险' : deviation > humRange * 0.2 ? '中风险' : '低风险';
+		alerts.push({
+			type: '湿度',
+			level,
+			actual: `${record.humidity}%`,
+			threshold: `${config.humidityMin}-${config.humidityMax}%`,
+			desc: `湿度${record.humidity > config.humidityMax ? '超高' : '过低'}，当前${record.humidity}%，阈值范围${config.humidityMin}-${config.humidityMax}%`
+		});
+	}
+
+	if (record.illuminance > config.illuminanceMax) {
+		const ratio = record.illuminance / config.illuminanceMax;
+		const level = ratio > 2 ? '高风险' : ratio > 1.5 ? '中风险' : '低风险';
+		alerts.push({
+			type: '照度',
+			level,
+			actual: `${record.illuminance} lux`,
+			threshold: `≤${config.illuminanceMax} lux`,
+			desc: `照度超高，当前${record.illuminance} lux，阈值≤${config.illuminanceMax} lux`
+		});
+	}
+
+	if (record.vibration > config.vibrationMax) {
+		const ratio = record.vibration / config.vibrationMax;
+		const level = ratio > 2 ? '高风险' : ratio > 1.5 ? '中风险' : '低风险';
+		alerts.push({
+			type: '震动',
+			level,
+			actual: `${record.vibration} mm/s`,
+			threshold: `≤${config.vibrationMax} mm/s`,
+			desc: `震动值超高，当前${record.vibration} mm/s，阈值≤${config.vibrationMax} mm/s`
+		});
+	}
+
+	const saltFogOrder: SaltFogLevel[] = ['无', '轻微', '中等', '严重'];
+	const recordLevelIdx = saltFogOrder.indexOf(record.saltFogLevel);
+	const maxLevelIdx = saltFogOrder.indexOf(config.saltFogMaxLevel);
+	if (recordLevelIdx > maxLevelIdx) {
+		const diff = recordLevelIdx - maxLevelIdx;
+		const level = diff >= 2 ? '高风险' : '中风险';
+		alerts.push({
+			type: '盐雾',
+			level,
+			actual: record.saltFogLevel,
+			threshold: `≤${config.saltFogMaxLevel}`,
+			desc: `盐雾等级超标，当前${record.saltFogLevel}，阈值≤${config.saltFogMaxLevel}`
+		});
+	}
+
+	return { alerts };
+}
+
+export function calculateOverallRiskLevel(alerts: { level: '低风险' | '中风险' | '高风险' }[]): '低风险' | '中风险' | '高风险' {
+	if (alerts.some(a => a.level === '高风险')) return '高风险';
+	if (alerts.some(a => a.level === '中风险')) return '中风险';
+	return '低风险';
+}
+
+export function getSaltFogLevelIndex(level: SaltFogLevel): number {
+	const order: SaltFogLevel[] = ['无', '轻微', '中等', '严重'];
+	return order.indexOf(level);
 }

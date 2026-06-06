@@ -182,7 +182,7 @@ export interface Attachment {
 
 export type OperationType = '创建' | '编辑' | '删除' | '新增维护记录' | '新增灯罩检查' | '新增光源更换' | '状态变更' | '创建借展申请' | '审批通过' | '审批拒绝' | '取消借展' | '借出' | '归还' | '创建修复工单' | '分配修复' | '开始修复' | '完成修复' | '验收修复' | '上传附件' | '删除附件' | '用户登录' | '切换馆区' | '导出数据';
 
-export type LogModule = '藏品档案' | '借展管理' | '修复工单' | '附件管理' | '用户管理' | '系统设置';
+export type LogModule = '藏品档案' | '借展管理' | '修复工单' | '附件管理' | '用户管理' | '系统设置' | '环境监测';
 
 export interface OperationLog {
 	id: string;
@@ -229,4 +229,131 @@ export const MUSEUM_TYPE_OPTIONS = ['主馆', '分馆', '合作馆'];
 
 export const OPERATION_TYPE_OPTIONS: OperationType[] = ['创建', '编辑', '删除', '新增维护记录', '新增灯罩检查', '新增光源更换', '状态变更', '创建借展申请', '审批通过', '审批拒绝', '取消借展', '借出', '归还', '创建修复工单', '分配修复', '开始修复', '完成修复', '验收修复', '上传附件', '删除附件', '用户登录', '切换馆区', '导出数据'];
 
-export const LOG_MODULE_OPTIONS: LogModule[] = ['藏品档案', '借展管理', '修复工单', '附件管理', '用户管理', '系统设置'];
+export const LOG_MODULE_OPTIONS: LogModule[] = ['藏品档案', '借展管理', '修复工单', '附件管理', '用户管理', '系统设置', '环境监测'];
+
+export type EnvMonitorLocationType = '展柜' | '库房';
+export type EnvMonitorDataType = '温度' | '湿度' | '照度' | '震动' | '盐雾';
+export type RiskLevel = '低风险' | '中风险' | '高风险';
+export type AlertStatus = '待处理' | '处理中' | '已确认' | '已忽略';
+export type RectificationTaskStatus = '待整改' | '整改中' | '待验收' | '已完成' | '已取消';
+export type SaltFogLevel = '无' | '轻微' | '中等' | '严重';
+
+export interface EnvMonitorPoint {
+	id: string;
+	code: string;
+	name: string;
+	type: EnvMonitorLocationType;
+	museumId: string;
+	museumName: string;
+	location: string;
+	beaconLightIds: string[];
+	beaconLightNames: string[];
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface EnvMonitorRecord {
+	id: string;
+	pointId: string;
+	pointName: string;
+	museumId: string;
+	museumName: string;
+	temperature: number;
+	humidity: number;
+	illuminance: number;
+	vibration: number;
+	saltFogLevel: SaltFogLevel;
+	collectedAt: string;
+	createdAt: string;
+}
+
+export interface EnvThresholdConfig {
+	id: string;
+	pointId: string;
+	pointName: string;
+	museumId: string;
+	museumName: string;
+	temperatureMin: number;
+	temperatureMax: number;
+	humidityMin: number;
+	humidityMax: number;
+	illuminanceMax: number;
+	vibrationMax: number;
+	saltFogMaxLevel: SaltFogLevel;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface EnvAlert {
+	id: string;
+	pointId: string;
+	pointName: string;
+	museumId: string;
+	museumName: string;
+	alertType: EnvMonitorDataType;
+	alertLevel: RiskLevel;
+	threshold: string;
+	actualValue: string;
+	description: string;
+	status: AlertStatus;
+	recordId: string;
+	confirmedBy?: string;
+	confirmedAt?: string;
+	confirmRemark?: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface EnvRiskAssessment {
+	id: string;
+	beaconLightId: string;
+	beaconLightName: string;
+	beaconLightCode: string;
+	museumId: string;
+	museumName: string;
+	pointId: string;
+	pointName: string;
+	riskLevel: RiskLevel;
+	riskFactors: string[];
+	description: string;
+	assessmentDate: string;
+	assessedBy: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface RectificationTask {
+	id: string;
+	alertId?: string;
+	alertType?: EnvMonitorDataType;
+	pointId: string;
+	pointName: string;
+	museumId: string;
+	museumName: string;
+	title: string;
+	description: string;
+	beaconLightIds: string[];
+	beaconLightNames: string[];
+	riskLevel: RiskLevel;
+	status: RectificationTaskStatus;
+	assigneeId?: string;
+	assigneeName?: string;
+	createdBy: string;
+	createdAt: string;
+	dueDate?: string;
+	startDate?: string;
+	completeDate?: string;
+	acceptanceDate?: string;
+	rectificationResult?: string;
+	acceptanceResult?: string;
+	cancelReason?: string;
+	remark?: string;
+	updatedAt: string;
+}
+
+export const ENV_LOCATION_TYPE_OPTIONS: EnvMonitorLocationType[] = ['展柜', '库房'];
+export const ENV_DATA_TYPE_OPTIONS: EnvMonitorDataType[] = ['温度', '湿度', '照度', '震动', '盐雾'];
+export const RISK_LEVEL_OPTIONS: RiskLevel[] = ['低风险', '中风险', '高风险'];
+export const ALERT_STATUS_OPTIONS: AlertStatus[] = ['待处理', '处理中', '已确认', '已忽略'];
+export const RECTIFICATION_STATUS_OPTIONS: RectificationTaskStatus[] = ['待整改', '整改中', '待验收', '已完成', '已取消'];
+export const SALT_FOG_LEVEL_OPTIONS: SaltFogLevel[] = ['无', '轻微', '中等', '严重'];

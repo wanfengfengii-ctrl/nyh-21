@@ -1,5 +1,5 @@
 import { writable, derived, get } from 'svelte/store';
-import { generateId, getToday, validateBeaconLight, checkBorrowOverdue, isDateBefore, getDefaultExhibitionStatus } from './validation';
+import { generateId, getToday, validateBeaconLight, checkBorrowOverdue, isDateBefore, getDefaultExhibitionStatus, validateEnvMonitorPoint, validateEnvMonitorRecord, validateThresholdConfig, validateRectificationTask, checkEnvThreshold, calculateOverallRiskLevel } from './validation';
 import type {
 	BeaconLight,
 	MaintenanceRecord,
@@ -19,7 +19,17 @@ import type {
 	RepairOrderStatus,
 	Attachment,
 	OperationLog,
-	OperationLogAction
+	OperationLogAction,
+	EnvMonitorPoint,
+	EnvMonitorRecord,
+	EnvThresholdConfig,
+	EnvAlert,
+	EnvRiskAssessment,
+	RectificationTask,
+	EnvMonitorDataType,
+	RiskLevel,
+	AlertStatus,
+	RectificationTaskStatus
 } from './types';
 
 const STORAGE_KEY = 'beacon_light_platform_v2';
@@ -36,6 +46,12 @@ interface PersistentState {
 	repairOrders: RepairOrder[];
 	attachments: Attachment[];
 	operationLogs: OperationLog[];
+	envMonitorPoints: EnvMonitorPoint[];
+	envMonitorRecords: EnvMonitorRecord[];
+	envThresholdConfigs: EnvThresholdConfig[];
+	envAlerts: EnvAlert[];
+	envRiskAssessments: EnvRiskAssessment[];
+	rectificationTasks: RectificationTask[];
 	currentUserId: string;
 	currentMuseumId: string;
 }
@@ -505,6 +521,373 @@ const mockOperationLogs: OperationLog[] = [
 	}
 ];
 
+const mockEnvMonitorPoints: EnvMonitorPoint[] = [
+	{
+		id: 'ep1',
+		code: 'Z-G-001',
+		name: '主馆一楼A展柜',
+		type: '展柜',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆',
+		location: '一楼展厅A区',
+		beaconLightIds: ['1'],
+		beaconLightNames: ['渤海老铁山灯塔灯器'],
+		createdAt: '2024-01-01',
+		updatedAt: '2024-03-01'
+	},
+	{
+		id: 'ep2',
+		code: 'Z-G-002',
+		name: '主馆二楼B展柜',
+		type: '展柜',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆',
+		location: '二楼展厅B区',
+		beaconLightIds: ['2'],
+		beaconLightNames: ['黄海成山号灯船灯器'],
+		createdAt: '2024-01-05',
+		updatedAt: '2024-03-05'
+	},
+	{
+		id: 'ep3',
+		code: 'K-F-001',
+		name: '主馆文物库房3号柜',
+		type: '库房',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆',
+		location: '地下一层库房',
+		beaconLightIds: ['3', '4'],
+		beaconLightNames: ['东海花鸟山灯塔透镜', '南海诸岛灯塔灯器'],
+		createdAt: '2024-01-10',
+		updatedAt: '2024-02-28'
+	},
+	{
+		id: 'ep4',
+		code: 'Z-G-003',
+		name: '上海分馆二楼A展柜',
+		type: '展柜',
+		museumId: 'm2',
+		museumName: '上海海事分馆',
+		location: '二楼展厅A区',
+		beaconLightIds: ['6'],
+		beaconLightNames: ['长江口灯船灯器'],
+		createdAt: '2024-02-01',
+		updatedAt: '2024-03-10'
+	},
+	{
+		id: 'ep5',
+		code: 'Z-G-004',
+		name: '广州馆一楼C展柜',
+		type: '展柜',
+		museumId: 'm3',
+		museumName: '广州航海博物馆',
+		location: '一楼展厅C区',
+		beaconLightIds: ['5'],
+		beaconLightNames: ['大沽灯塔棱镜组'],
+		createdAt: '2024-02-15',
+		updatedAt: '2024-03-15'
+	}
+];
+
+function generateMockEnvRecords(): EnvMonitorRecord[] {
+	const records: EnvMonitorRecord[] = [];
+	const points = mockEnvMonitorPoints;
+	const now = new Date();
+
+	for (let i = 30; i >= 0; i--) {
+		const date = new Date(now);
+		date.setDate(date.getDate() - i);
+
+		points.forEach((point, pointIdx) => {
+			const baseTemp = 22 + pointIdx * 0.5;
+			const baseHum = 50 + pointIdx * 2;
+			const tempVariation = Math.sin(i * 0.3 + pointIdx) * 3;
+			const humVariation = Math.cos(i * 0.25 + pointIdx) * 5;
+
+			let temperature = Math.round((baseTemp + tempVariation + (Math.random() - 0.5) * 2) * 10) / 10;
+			let humidity = Math.round((baseHum + humVariation + (Math.random() - 0.5) * 4) * 10) / 10;
+			let illuminance = Math.round(150 + Math.sin(i * 0.4) * 50 + Math.random() * 30);
+			let vibration = Math.round((0.05 + Math.random() * 0.1) * 100) / 100;
+
+			if (i === 5 && point.id === 'ep3') {
+				temperature = 28.5;
+				humidity = 70;
+				illuminance = 50;
+				vibration = 0.3;
+			}
+			if (i === 3 && point.id === 'ep1') {
+				illuminance = 280;
+			}
+
+			const saltFogLevels = ['无', '无', '无', '轻微'] as const;
+			const saltFogLevel = saltFogLevels[Math.floor(Math.random() * saltFogLevels.length)];
+
+			records.push({
+				id: `er_${i}_${point.id}`,
+				pointId: point.id,
+				pointName: point.name,
+				museumId: point.museumId,
+				museumName: point.museumName,
+				temperature,
+				humidity,
+				illuminance,
+				vibration,
+				saltFogLevel,
+				collectedAt: date.toISOString().slice(0, 10) + ' 10:00:00',
+				createdAt: date.toISOString().slice(0, 10)
+			});
+		});
+	}
+
+	return records.sort((a, b) => b.collectedAt.localeCompare(a.collectedAt));
+}
+
+const mockEnvMonitorRecords = generateMockEnvRecords();
+
+const mockEnvThresholdConfigs: EnvThresholdConfig[] = [
+	{
+		id: 'etc1',
+		pointId: 'ep1',
+		pointName: '主馆一楼A展柜',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆',
+		temperatureMin: 18,
+		temperatureMax: 25,
+		humidityMin: 40,
+		humidityMax: 60,
+		illuminanceMax: 200,
+		vibrationMax: 0.2,
+		saltFogMaxLevel: '轻微',
+		createdAt: '2024-01-01',
+		updatedAt: '2024-03-01'
+	},
+	{
+		id: 'etc2',
+		pointId: 'ep2',
+		pointName: '主馆二楼B展柜',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆',
+		temperatureMin: 18,
+		temperatureMax: 25,
+		humidityMin: 40,
+		humidityMax: 60,
+		illuminanceMax: 150,
+		vibrationMax: 0.2,
+		saltFogMaxLevel: '轻微',
+		createdAt: '2024-01-05',
+		updatedAt: '2024-03-05'
+	},
+	{
+		id: 'etc3',
+		pointId: 'ep3',
+		pointName: '主馆文物库房3号柜',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆',
+		temperatureMin: 15,
+		temperatureMax: 22,
+		humidityMin: 45,
+		humidityMax: 55,
+		illuminanceMax: 50,
+		vibrationMax: 0.1,
+		saltFogMaxLevel: '无',
+		createdAt: '2024-01-10',
+		updatedAt: '2024-02-28'
+	},
+	{
+		id: 'etc4',
+		pointId: 'ep4',
+		pointName: '上海分馆二楼A展柜',
+		museumId: 'm2',
+		museumName: '上海海事分馆',
+		temperatureMin: 18,
+		temperatureMax: 25,
+		humidityMin: 40,
+		humidityMax: 60,
+		illuminanceMax: 180,
+		vibrationMax: 0.2,
+		saltFogMaxLevel: '轻微',
+		createdAt: '2024-02-01',
+		updatedAt: '2024-03-10'
+	},
+	{
+		id: 'etc5',
+		pointId: 'ep5',
+		pointName: '广州馆一楼C展柜',
+		museumId: 'm3',
+		museumName: '广州航海博物馆',
+		temperatureMin: 20,
+		temperatureMax: 26,
+		humidityMin: 45,
+		humidityMax: 65,
+		illuminanceMax: 200,
+		vibrationMax: 0.2,
+		saltFogMaxLevel: '中等',
+		createdAt: '2024-02-15',
+		updatedAt: '2024-03-15'
+	}
+];
+
+const mockEnvAlerts: EnvAlert[] = [
+	{
+		id: 'ea1',
+		pointId: 'ep3',
+		pointName: '主馆文物库房3号柜',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆',
+		alertType: '温度',
+		alertLevel: '高风险',
+		threshold: '15-22°C',
+		actualValue: '28.5°C',
+		description: '温度超高，当前28.5°C，阈值范围15-22°C',
+		status: '待处理',
+		recordId: 'er_5_ep3',
+		createdAt: '2024-06-01 10:00:00',
+		updatedAt: '2024-06-01 10:00:00'
+	},
+	{
+		id: 'ea2',
+		pointId: 'ep3',
+		pointName: '主馆文物库房3号柜',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆',
+		alertType: '湿度',
+		alertLevel: '中风险',
+		threshold: '45-55%',
+		actualValue: '70%',
+		description: '湿度超高，当前70%，阈值范围45-55%',
+		status: '待处理',
+		recordId: 'er_5_ep3',
+		createdAt: '2024-06-01 10:00:00',
+		updatedAt: '2024-06-01 10:00:00'
+	},
+	{
+		id: 'ea3',
+		pointId: 'ep3',
+		pointName: '主馆文物库房3号柜',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆',
+		alertType: '震动',
+		alertLevel: '中风险',
+		threshold: '≤0.1 mm/s',
+		actualValue: '0.3 mm/s',
+		description: '震动值超高，当前0.3 mm/s，阈值≤0.1 mm/s',
+		status: '处理中',
+		recordId: 'er_5_ep3',
+		confirmedBy: '张保管',
+		confirmedAt: '2024-06-01 14:30:00',
+		confirmRemark: '已发现异常，正在排查原因',
+		createdAt: '2024-06-01 10:00:00',
+		updatedAt: '2024-06-01 14:30:00'
+	},
+	{
+		id: 'ea4',
+		pointId: 'ep1',
+		pointName: '主馆一楼A展柜',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆',
+		alertType: '照度',
+		alertLevel: '低风险',
+		threshold: '≤200 lux',
+		actualValue: '280 lux',
+		description: '照度超高，当前280 lux，阈值≤200 lux',
+		status: '已确认',
+		recordId: 'er_3_ep1',
+		confirmedBy: '王馆长',
+		confirmedAt: '2024-06-03 09:15:00',
+		confirmRemark: '因临时展览活动，已调整展柜位置，待活动结束后恢复',
+		createdAt: '2024-06-03 10:00:00',
+		updatedAt: '2024-06-03 09:15:00'
+	}
+];
+
+const mockEnvRiskAssessments: EnvRiskAssessment[] = [
+	{
+		id: 'era1',
+		beaconLightId: '3',
+		beaconLightName: '东海花鸟山灯塔透镜',
+		beaconLightCode: 'HBD-003',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆',
+		pointId: 'ep3',
+		pointName: '主馆文物库房3号柜',
+		riskLevel: '高风险',
+		riskFactors: ['温度超高', '湿度过高', '震动超标'],
+		description: '库房3号柜近期出现多项环境指标超标，对玻璃材质藏品存在较大风险，建议立即采取整改措施',
+		assessmentDate: '2024-06-01',
+		assessedBy: '王馆长',
+		createdAt: '2024-06-01',
+		updatedAt: '2024-06-01'
+	},
+	{
+		id: 'era2',
+		beaconLightId: '4',
+		beaconLightName: '南海诸岛灯塔灯器',
+		beaconLightCode: 'HBD-004',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆',
+		pointId: 'ep3',
+		pointName: '主馆文物库房3号柜',
+		riskLevel: '高风险',
+		riskFactors: ['温度超高', '湿度过高', '震动超标'],
+		description: '库房3号柜多项环境指标超标，钢制藏品存在锈蚀风险，需尽快整改',
+		assessmentDate: '2024-06-01',
+		assessedBy: '王馆长',
+		createdAt: '2024-06-01',
+		updatedAt: '2024-06-01'
+	}
+];
+
+const mockRectificationTasks: RectificationTask[] = [
+	{
+		id: 'rt1',
+		alertId: 'ea1',
+		alertType: '温度',
+		pointId: 'ep3',
+		pointName: '主馆文物库房3号柜',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆',
+		title: '库房3号柜温湿度超标整改',
+		description: '近期库房3号柜温度和湿度均出现超标情况，需排查空调系统运行状态，检查库房密封性，必要时增加除湿设备',
+		beaconLightIds: ['3', '4'],
+		beaconLightNames: ['东海花鸟山灯塔透镜', '南海诸岛灯塔灯器'],
+		riskLevel: '高风险',
+		status: '整改中',
+		assigneeId: 'u3',
+		assigneeName: '张保管',
+		createdBy: '王馆长',
+		createdAt: '2024-06-01',
+		dueDate: '2024-06-10',
+		startDate: '2024-06-02',
+		remark: '优先处理玻璃材质藏品的保护',
+		updatedAt: '2024-06-02'
+	},
+	{
+		id: 'rt2',
+		alertId: 'ea4',
+		alertType: '照度',
+		pointId: 'ep1',
+		pointName: '主馆一楼A展柜',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆',
+		title: 'A展柜照度超标整改',
+		description: 'A展柜照度临时超标，因展览活动调整了展柜位置，活动结束后需立即恢复原位置并检查光照强度',
+		beaconLightIds: ['1'],
+		beaconLightNames: ['渤海老铁山灯塔灯器'],
+		riskLevel: '低风险',
+		status: '已完成',
+		assigneeId: 'u3',
+		assigneeName: '张保管',
+		createdBy: '王馆长',
+		createdAt: '2024-06-03',
+		startDate: '2024-06-03',
+		completeDate: '2024-06-04',
+		acceptanceDate: '2024-06-04',
+		rectificationResult: '展柜已恢复原位，照度恢复正常',
+		acceptanceResult: '验收通过，环境指标恢复正常',
+		updatedAt: '2024-06-04'
+	}
+];
+
 const stored = loadFromStorage();
 
 export const museums = writable<Museum[]>(stored?.museums || mockMuseums);
@@ -518,6 +901,12 @@ export const borrowRequests = writable<BorrowRequest[]>(stored?.borrowRequests |
 export const repairOrders = writable<RepairOrder[]>(stored?.repairOrders || mockRepairOrders);
 export const attachments = writable<Attachment[]>(stored?.attachments || mockAttachments);
 export const operationLogs = writable<OperationLog[]>(stored?.operationLogs || mockOperationLogs);
+export const envMonitorPoints = writable<EnvMonitorPoint[]>(stored?.envMonitorPoints || mockEnvMonitorPoints);
+export const envMonitorRecords = writable<EnvMonitorRecord[]>(stored?.envMonitorRecords || mockEnvMonitorRecords);
+export const envThresholdConfigs = writable<EnvThresholdConfig[]>(stored?.envThresholdConfigs || mockEnvThresholdConfigs);
+export const envAlerts = writable<EnvAlert[]>(stored?.envAlerts || mockEnvAlerts);
+export const envRiskAssessments = writable<EnvRiskAssessment[]>(stored?.envRiskAssessments || mockEnvRiskAssessments);
+export const rectificationTasks = writable<RectificationTask[]>(stored?.rectificationTasks || mockRectificationTasks);
 
 export const currentUserId = writable<string>(stored?.currentUserId || 'u2');
 export const currentMuseumId = writable<string>(stored?.currentMuseumId || 'm1');
@@ -633,6 +1022,12 @@ function persistAll() {
 		repairOrders: get(repairOrders),
 		attachments: get(attachments),
 		operationLogs: get(operationLogs),
+		envMonitorPoints: get(envMonitorPoints),
+		envMonitorRecords: get(envMonitorRecords),
+		envThresholdConfigs: get(envThresholdConfigs),
+		envAlerts: get(envAlerts),
+		envRiskAssessments: get(envRiskAssessments),
+		rectificationTasks: get(rectificationTasks),
 		currentUserId: get(currentUserId),
 		currentMuseumId: get(currentMuseumId)
 	});
@@ -1394,4 +1789,535 @@ export function downloadCSV(content: string, filename: string) {
 	link.click();
 	document.body.removeChild(link);
 	URL.revokeObjectURL(url);
+}
+
+export function addEnvMonitorPoint(point: Omit<EnvMonitorPoint, 'id' | 'createdAt' | 'updatedAt' | 'museumName' | 'beaconLightNames'>) {
+	const museum = get(museums).find(m => m.id === point.museumId);
+	const lights = get(beaconLights).filter(l => point.beaconLightIds.includes(l.id));
+	const today = getToday();
+
+	const newPoint: EnvMonitorPoint = {
+		...point,
+		id: generateId(),
+		museumName: museum?.name || '',
+		beaconLightNames: lights.map(l => l.name),
+		createdAt: today,
+		updatedAt: today
+	};
+
+	const validation = validateEnvMonitorPoint(newPoint, get(envMonitorPoints));
+	if (!validation.valid) {
+		return { success: false, errors: validation.errors };
+	}
+
+	envMonitorPoints.update(points => [...points, newPoint]);
+	addOperationLog({
+		action: '创建',
+		targetType: '航标灯',
+		targetId: newPoint.id,
+		targetName: newPoint.name,
+		detail: `创建环境监测点：${newPoint.code} - ${newPoint.name}`
+	});
+	persistAll();
+	return { success: true, errors: [], point: newPoint };
+}
+
+export function updateEnvMonitorPoint(id: string, updates: Partial<EnvMonitorPoint>) {
+	const existing = get(envMonitorPoints).find(p => p.id === id);
+	if (!existing) return { success: false, errors: ['监测点不存在'] };
+
+	const combined = { ...existing, ...updates };
+	const validation = validateEnvMonitorPoint(combined, get(envMonitorPoints), id);
+	if (!validation.valid) {
+		return { success: false, errors: validation.errors };
+	}
+
+	if (updates.beaconLightIds) {
+		const lights = get(beaconLights).filter(l => updates.beaconLightIds!.includes(l.id));
+		updates.beaconLightNames = lights.map(l => l.name);
+	}
+
+	envMonitorPoints.update(points =>
+		points.map(p => p.id === id ? { ...p, ...updates, updatedAt: getToday() } : p)
+	);
+	addOperationLog({
+		action: '编辑',
+		targetType: '航标灯',
+		targetId: id,
+		targetName: updates.name || existing.name,
+		detail: `编辑环境监测点：${existing.code}`
+	});
+	persistAll();
+	return { success: true, errors: [] };
+}
+
+export function deleteEnvMonitorPoint(id: string) {
+	const point = get(envMonitorPoints).find(p => p.id === id);
+	envMonitorPoints.update(points => points.filter(p => p.id !== id));
+	envMonitorRecords.update(records => records.filter(r => r.pointId !== id));
+	envThresholdConfigs.update(configs => configs.filter(c => c.pointId !== id));
+	envAlerts.update(alerts => alerts.filter(a => a.pointId !== id));
+	envRiskAssessments.update(assessments => assessments.filter(a => a.pointId !== id));
+	rectificationTasks.update(tasks => tasks.filter(t => t.pointId !== id));
+
+	if (point) {
+		addOperationLog({
+			action: '删除',
+			targetType: '航标灯',
+			targetId: id,
+			targetName: point.name,
+			detail: `删除环境监测点：${point.code} - ${point.name}`
+		});
+	}
+	persistAll();
+}
+
+export function addEnvMonitorRecord(record: Omit<EnvMonitorRecord, 'id' | 'createdAt' | 'pointName' | 'museumId' | 'museumName'>) {
+	const point = get(envMonitorPoints).find(p => p.id === record.pointId);
+	if (!point) return null;
+
+	const newRecord: EnvMonitorRecord = {
+		...record,
+		id: generateId(),
+		pointName: point.name,
+		museumId: point.museumId,
+		museumName: point.museumName,
+		createdAt: getToday()
+	};
+
+	const validation = validateEnvMonitorRecord(newRecord);
+	if (!validation.valid) {
+		return { success: false, errors: validation.errors };
+	}
+
+	envMonitorRecords.update(records => [newRecord, ...records]);
+
+	const thresholdConfig = get(envThresholdConfigs).find(c => c.pointId === record.pointId);
+	if (thresholdConfig) {
+		const { alerts } = checkEnvThreshold(newRecord, thresholdConfig);
+		alerts.forEach(alert => {
+			const envAlert: EnvAlert = {
+				id: generateId(),
+				pointId: record.pointId,
+				pointName: point.name,
+				museumId: point.museumId,
+				museumName: point.museumName,
+				alertType: alert.type,
+				alertLevel: alert.level,
+				threshold: alert.threshold,
+				actualValue: alert.actual,
+				description: alert.desc,
+				status: '待处理',
+				recordId: newRecord.id,
+				createdAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
+				updatedAt: new Date().toISOString().replace('T', ' ').slice(0, 19)
+			};
+			envAlerts.update(a => [envAlert, ...a]);
+			addOperationLog({
+				action: '创建',
+				targetType: '航标灯',
+				targetId: envAlert.id,
+				targetName: point.name,
+				detail: `环境告警：${alert.type}${alert.level}，${alert.desc}`
+			});
+		});
+
+		if (alerts.length > 0) {
+			updateRiskAssessment(record.pointId);
+		}
+	}
+
+	addOperationLog({
+		action: '新增维护记录',
+		targetType: '航标灯',
+		targetId: record.pointId,
+		targetName: point.name,
+		detail: `新增环境监测记录：温度${record.temperature}°C，湿度${record.humidity}%`
+	});
+
+	persistAll();
+	return { success: true, errors: [], record: newRecord };
+}
+
+export function updateThresholdConfig(pointId: string, config: Omit<EnvThresholdConfig, 'id' | 'pointId' | 'pointName' | 'museumId' | 'museumName' | 'createdAt' | 'updatedAt'>) {
+	const point = get(envMonitorPoints).find(p => p.id === pointId);
+	if (!point) return { success: false, errors: ['监测点不存在'] };
+
+	const existing = get(envThresholdConfigs).find(c => c.pointId === pointId);
+	const today = getToday();
+
+	const fullConfig = {
+		...config,
+		pointId,
+		pointName: point.name,
+		museumId: point.museumId,
+		museumName: point.museumName
+	};
+
+	const validation = validateThresholdConfig(fullConfig);
+	if (!validation.valid) {
+		return { success: false, errors: validation.errors };
+	}
+
+	if (existing) {
+		envThresholdConfigs.update(configs =>
+			configs.map(c => c.id === existing.id ? { ...c, ...config, updatedAt: today } : c)
+		);
+		addOperationLog({
+			action: '编辑',
+			targetType: '航标灯',
+			targetId: existing.id,
+			targetName: point.name,
+			detail: `更新环境阈值配置：${point.name}`
+		});
+	} else {
+		const newConfig: EnvThresholdConfig = {
+			...fullConfig,
+			id: generateId(),
+			createdAt: today,
+			updatedAt: today
+		};
+		envThresholdConfigs.update(configs => [...configs, newConfig]);
+		addOperationLog({
+			action: '创建',
+			targetType: '航标灯',
+			targetId: newConfig.id,
+			targetName: point.name,
+			detail: `创建环境阈值配置：${point.name}`
+		});
+	}
+
+	persistAll();
+	return { success: true, errors: [] };
+}
+
+export function confirmEnvAlert(alertId: string, status: AlertStatus, remark: string) {
+	const user = get(currentUser);
+	const alert = get(envAlerts).find(a => a.id === alertId);
+	if (!alert) return false;
+
+	envAlerts.update(alerts =>
+		alerts.map(a => a.id === alertId ? {
+			...a,
+			status,
+			confirmedBy: user?.fullName || '',
+			confirmedAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
+			confirmRemark: remark,
+			updatedAt: new Date().toISOString().replace('T', ' ').slice(0, 19)
+		} : a)
+	);
+
+	addOperationLog({
+		action: '编辑',
+		targetType: '航标灯',
+		targetId: alertId,
+		targetName: alert.pointName,
+		detail: `告警处置：${alert.alertType}告警，状态变更为${status}，备注：${remark}`
+	});
+
+	persistAll();
+	return true;
+}
+
+export function updateRiskAssessment(pointId: string) {
+	const point = get(envMonitorPoints).find(p => p.id === pointId);
+	if (!point) return;
+
+	const pendingAlerts = get(envAlerts).filter(a => a.pointId === pointId && a.status !== '已忽略');
+	const overallRisk = calculateOverallRiskLevel(pendingAlerts.map(a => ({ level: a.alertLevel })));
+
+	const riskFactors = pendingAlerts.map(a => `${a.alertType}${a.alertLevel === '高风险' ? '严重' : a.alertLevel === '中风险' ? '中度' : '轻微'}超标`);
+	const uniqueFactors = [...new Set(riskFactors)];
+
+	point.beaconLightIds.forEach(beaconLightId => {
+		const light = get(beaconLights).find(l => l.id === beaconLightId);
+		if (!light) return;
+
+		const existingAssessment = get(envRiskAssessments).find(
+			a => a.beaconLightId === beaconLightId && a.pointId === pointId
+		);
+
+		const user = get(currentUser);
+		const today = getToday();
+
+		if (existingAssessment) {
+			envRiskAssessments.update(assessments =>
+				assessments.map(a => a.id === existingAssessment.id ? {
+					...a,
+					riskLevel: overallRisk,
+					riskFactors: uniqueFactors,
+					description: `${point.name}当前环境风险等级：${overallRisk}，风险因素：${uniqueFactors.join('、')}`,
+					assessmentDate: today,
+					assessedBy: user?.fullName || '系统',
+					updatedAt: today
+				} : a)
+			);
+		} else {
+			const assessment: EnvRiskAssessment = {
+				id: generateId(),
+				beaconLightId,
+				beaconLightName: light.name,
+				beaconLightCode: light.code,
+				museumId: point.museumId,
+				museumName: point.museumName,
+				pointId,
+				pointName: point.name,
+				riskLevel: overallRisk,
+				riskFactors: uniqueFactors,
+				description: `${point.name}当前环境风险等级：${overallRisk}，风险因素：${uniqueFactors.join('、')}`,
+				assessmentDate: today,
+				assessedBy: user?.fullName || '系统',
+				createdAt: today,
+				updatedAt: today
+			};
+			envRiskAssessments.update(assessments => [...assessments, assessment]);
+		}
+
+		if (overallRisk === '高风险') {
+			if (light.exhibitionStatus === '可展出' || light.exhibitionStatus === '展出中') {
+				beaconLights.update(lights =>
+					lights.map(l => l.id === beaconLightId ? { ...l, exhibitionStatus: '库房存储' as const, updatedAt: getToday() } : l)
+				);
+				addOperationLog({
+					action: '展陈流转',
+					targetType: '航标灯',
+					targetId: beaconLightId,
+					targetName: light.name,
+					detail: `高风险自动撤展：环境风险等级为高风险，自动从${light.exhibitionStatus}变更为库房存储`
+				});
+			}
+		}
+	});
+
+	persistAll();
+}
+
+export function isBeaconLightHighRisk(beaconLightId: string): boolean {
+	const assessments = get(envRiskAssessments).filter(a => a.beaconLightId === beaconLightId);
+	return assessments.some(a => a.riskLevel === '高风险');
+}
+
+export function createRectificationTask(data: {
+	alertId?: string;
+	alertType?: EnvMonitorDataType;
+	pointId: string;
+	title: string;
+	description: string;
+	beaconLightIds: string[];
+	riskLevel: RiskLevel;
+	assigneeId?: string;
+	dueDate?: string;
+	remark?: string;
+}) {
+	const point = get(envMonitorPoints).find(p => p.id === data.pointId);
+	const user = get(currentUser);
+	if (!point || !user) return null;
+
+	const lights = get(beaconLights).filter(l => data.beaconLightIds.includes(l.id));
+	const today = getToday();
+
+	const task: RectificationTask = {
+		id: generateId(),
+		alertId: data.alertId,
+		alertType: data.alertType,
+		pointId: data.pointId,
+		pointName: point.name,
+		museumId: point.museumId,
+		museumName: point.museumName,
+		title: data.title,
+		description: data.description,
+		beaconLightIds: data.beaconLightIds,
+		beaconLightNames: lights.map(l => l.name),
+		riskLevel: data.riskLevel,
+		status: '待整改',
+		assigneeId: data.assigneeId,
+		assigneeName: data.assigneeId ? get(users).find(u => u.id === data.assigneeId)?.fullName : undefined,
+		createdBy: user.fullName,
+		createdAt: today,
+		dueDate: data.dueDate,
+		remark: data.remark,
+		updatedAt: today
+	};
+
+	const validation = validateRectificationTask(task);
+	if (!validation.valid) {
+		return { success: false, errors: validation.errors };
+	}
+
+	rectificationTasks.update(tasks => [task, ...tasks]);
+	addOperationLog({
+		action: '创建修复工单',
+		targetType: '修复工单',
+		targetId: task.id,
+		targetName: task.title,
+		detail: `创建整改任务：${task.title}，风险等级：${task.riskLevel}`
+	});
+
+	persistAll();
+	return { success: true, errors: [], task };
+}
+
+export function startRectificationTask(taskId: string) {
+	const user = get(currentUser);
+	const task = get(rectificationTasks).find(t => t.id === taskId);
+	if (!task) return false;
+
+	rectificationTasks.update(tasks =>
+		tasks.map(t => t.id === taskId ? {
+			...t,
+			status: '整改中',
+			startDate: getToday(),
+			assigneeId: user?.id,
+			assigneeName: user?.fullName,
+			updatedAt: getToday()
+		} : t)
+	);
+
+	addOperationLog({
+		action: '开始修复',
+		targetType: '修复工单',
+		targetId: taskId,
+		targetName: task.title,
+		detail: `开始整改任务：${task.title}`
+	});
+
+	persistAll();
+	return true;
+}
+
+export function completeRectificationTask(taskId: string, result: string) {
+	const task = get(rectificationTasks).find(t => t.id === taskId);
+	if (!task) return false;
+
+	if (task.alertId) {
+		const alert = get(envAlerts).find(a => a.id === task.alertId);
+		if (alert && alert.status === '待处理') {
+			return { success: false, error: '存在未处理的关联告警，不能完成整改任务' };
+		}
+	}
+
+	rectificationTasks.update(tasks =>
+		tasks.map(t => t.id === taskId ? {
+			...t,
+			status: '待验收',
+			completeDate: getToday(),
+			rectificationResult: result,
+			updatedAt: getToday()
+		} : t)
+	);
+
+	addOperationLog({
+		action: '完成修复',
+		targetType: '修复工单',
+		targetId: taskId,
+		targetName: task.title,
+		detail: `完成整改任务：${task.title}，整改结果：${result}`
+	});
+
+	persistAll();
+	return { success: true, error: null };
+}
+
+export function acceptRectificationTask(taskId: string, result: string) {
+	const task = get(rectificationTasks).find(t => t.id === taskId);
+	if (!task) return false;
+
+	rectificationTasks.update(tasks =>
+		tasks.map(t => t.id === taskId ? {
+			...t,
+			status: '已完成',
+			acceptanceDate: getToday(),
+			acceptanceResult: result,
+			updatedAt: getToday()
+		} : t)
+	);
+
+	addOperationLog({
+		action: '验收修复',
+		targetType: '修复工单',
+		targetId: taskId,
+		targetName: task.title,
+		detail: `验收整改任务：${task.title}，验收结果：${result}`
+	});
+
+	persistAll();
+	return true;
+}
+
+export function cancelRectificationTask(taskId: string, reason: string) {
+	const task = get(rectificationTasks).find(t => t.id === taskId);
+	if (!task) return false;
+
+	if (task.alertId) {
+		const alert = get(envAlerts).find(a => a.id === task.alertId);
+		if (alert && (alert.status === '待处理' || alert.status === '处理中')) {
+			return { success: false, error: '存在未处理的关联告警，不能取消整改任务' };
+		}
+	}
+
+	rectificationTasks.update(tasks =>
+		tasks.map(t => t.id === taskId ? {
+			...t,
+			status: '已取消',
+			cancelReason: reason,
+			updatedAt: getToday()
+		} : t)
+	);
+
+	addOperationLog({
+		action: '删除',
+		targetType: '修复工单',
+		targetId: taskId,
+		targetName: task.title,
+		detail: `取消整改任务：${task.title}，原因：${reason}`
+	});
+
+	persistAll();
+	return { success: true, error: null };
+}
+
+export function assignRectificationTask(taskId: string, assigneeId: string) {
+	const assignee = get(users).find(u => u.id === assigneeId);
+	const task = get(rectificationTasks).find(t => t.id === taskId);
+	if (!assignee || !task) return false;
+
+	rectificationTasks.update(tasks =>
+		tasks.map(t => t.id === taskId ? {
+			...t,
+			assigneeId,
+			assigneeName: assignee.fullName,
+			updatedAt: getToday()
+		} : t)
+	);
+
+	addOperationLog({
+		action: '分配修复',
+		targetType: '修复工单',
+		targetId: taskId,
+		targetName: task.title,
+		detail: `分配整改任务给：${assignee.fullName}`
+	});
+
+	persistAll();
+	return true;
+}
+
+export function canExhibitBeaconLight(beaconLightId: string): { can: boolean; reason?: string } {
+	if (isBeaconLightHighRisk(beaconLightId)) {
+		return { can: false, reason: '高风险藏品不能标记为可展出或借展中' };
+	}
+	return { can: true };
+}
+
+export function validateExhibitionStatusChangeWithRisk(
+	beaconLightId: string,
+	toStatus: ExhibitionStatus
+): { valid: boolean; errors: string[] } {
+	const errors: string[] = [];
+
+	if ((toStatus === '可展出' || toStatus === '展出中') && isBeaconLightHighRisk(beaconLightId)) {
+		errors.push('高风险藏品不能标记为可展出或展出中');
+	}
+
+	return { valid: errors.length === 0, errors };
 }
