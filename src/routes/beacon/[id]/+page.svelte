@@ -224,7 +224,11 @@
 			exhibitionErrors = ['操作人员不能为空'];
 			return;
 		}
-		changeExhibitionStatus(beaconId, exhibitionForm.toStatus, exhibitionForm.operator, exhibitionForm.remark);
+		const changeResult = changeExhibitionStatus(beaconId, exhibitionForm.toStatus, exhibitionForm.operator, exhibitionForm.remark);
+		if (!changeResult.success) {
+			exhibitionErrors = changeResult.errors;
+			return;
+		}
 		showExhibitionModal = false;
 	}
 

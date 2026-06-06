@@ -1248,6 +1248,11 @@ export function changeExhibitionStatus(
 	operator: string,
 	remark: string
 ) {
+	const riskValidation = validateExhibitionStatusChangeWithRisk(beaconLightId, toStatus);
+	if (!riskValidation.valid) {
+		return { success: false, errors: riskValidation.errors };
+	}
+
 	let fromStatus: ExhibitionStatus = '库房存储';
 	beaconLights.update((lights) =>
 		lights.map((l) => {
@@ -1278,6 +1283,7 @@ export function changeExhibitionStatus(
 		detail: `展陈状态变更：${fromStatus} → ${toStatus}`
 	});
 	persistAll();
+	return { success: true, errors: [] };
 }
 
 export function createBorrowRequest(data: Omit<BorrowRequest, 'id' | 'status' | 'approvalHistory' | 'createdAt' | 'updatedAt' | 'beaconLightName' | 'beaconLightCode' | 'sourceMuseumName' | 'targetMuseumName' | 'applicantName'>) {
@@ -1286,7 +1292,13 @@ export function createBorrowRequest(data: Omit<BorrowRequest, 'id' | 'status' | 
 	const targetMuseum = get(museums).find(m => m.id === data.targetMuseumId);
 	const user = get(currentUser);
 
-	if (!light || !sourceMuseum || !targetMuseum || !user) return null;
+	if (!light || !sourceMuseum || !targetMuseum || !user) {
+		return { success: false, errors: ['参数不完整'], request: null };
+	}
+
+	if (isBeaconLightHighRisk(data.beaconLightId)) {
+		return { success: false, errors: ['高风险藏品不能发起借展申请'], request: null };
+	}
 
 	const approvalRecord: ApprovalRecord = {
 		id: generateId(),
@@ -1322,7 +1334,7 @@ export function createBorrowRequest(data: Omit<BorrowRequest, 'id' | 'status' | 
 		detail: `从${sourceMuseum.name}借展至${targetMuseum.name}，用途：${data.purpose}`
 	});
 	persistAll();
-	return request;
+	return { success: true, errors: [], request };
 }
 
 export function approveBorrowRequest(requestId: string, action: '通过' | '拒绝', comment: string) {
@@ -2146,8 +2158,8 @@ export function createRectificationTask(data: {
 
 	rectificationTasks.update(tasks => [task, ...tasks]);
 	addOperationLog({
-		action: '创建修复工单',
-		targetType: '修复工单',
+		action: '创建整改任务',
+		targetType: '整改任务',
 		targetId: task.id,
 		targetName: task.title,
 		detail: `创建整改任务：${task.title}，风险等级：${task.riskLevel}`
@@ -2174,8 +2186,8 @@ export function startRectificationTask(taskId: string) {
 	);
 
 	addOperationLog({
-		action: '开始修复',
-		targetType: '修复工单',
+		action: '开始整改',
+		targetType: '整改任务',
 		targetId: taskId,
 		targetName: task.title,
 		detail: `开始整改任务：${task.title}`
@@ -2207,8 +2219,8 @@ export function completeRectificationTask(taskId: string, result: string) {
 	);
 
 	addOperationLog({
-		action: '完成修复',
-		targetType: '修复工单',
+		action: '完成整改',
+		targetType: '整改任务',
 		targetId: taskId,
 		targetName: task.title,
 		detail: `完成整改任务：${task.title}，整改结果：${result}`
@@ -2233,8 +2245,8 @@ export function acceptRectificationTask(taskId: string, result: string) {
 	);
 
 	addOperationLog({
-		action: '验收修复',
-		targetType: '修复工单',
+		action: '验收整改',
+		targetType: '整改任务',
 		targetId: taskId,
 		targetName: task.title,
 		detail: `验收整改任务：${task.title}，验收结果：${result}`
@@ -2265,8 +2277,8 @@ export function cancelRectificationTask(taskId: string, reason: string) {
 	);
 
 	addOperationLog({
-		action: '删除',
-		targetType: '修复工单',
+		action: '取消整改任务',
+		targetType: '整改任务',
 		targetId: taskId,
 		targetName: task.title,
 		detail: `取消整改任务：${task.title}，原因：${reason}`
@@ -2291,8 +2303,8 @@ export function assignRectificationTask(taskId: string, assigneeId: string) {
 	);
 
 	addOperationLog({
-		action: '分配修复',
-		targetType: '修复工单',
+		action: '编辑',
+		targetType: '整改任务',
 		targetId: taskId,
 		targetName: task.title,
 		detail: `分配整改任务给：${assignee.fullName}`

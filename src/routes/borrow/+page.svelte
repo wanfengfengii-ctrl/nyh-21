@@ -113,7 +113,7 @@
 			return;
 		}
 
-		createBorrowRequest({
+		const createResult = createBorrowRequest({
 			beaconLightId: createForm.beaconLightId,
 			sourceMuseumId: createForm.sourceMuseumId,
 			targetMuseumId: createForm.targetMuseumId,
@@ -125,6 +125,11 @@
 			exhibitionLocation: createForm.exhibitionLocation,
 			remark: createForm.remark
 		});
+
+		if (!createResult.success) {
+			createErrors = createResult.errors;
+			return;
+		}
 
 		showCreateModal = false;
 	}
