@@ -2,7 +2,7 @@
 	import './layout.css';
 	import favicon from '$lib/assets/favicon.svg';
 	import { page } from '$app/stores';
-	import { currentUser, currentMuseum, currentUserId, currentMuseumId, users, museums, switchUser, switchMuseum, updateOverdueBorrows } from '$lib/stores';
+	import { currentUser, currentMuseum, currentUserId, currentMuseumId, users, museums, switchUser, switchMuseum, updateOverdueBorrows, unreadNotificationCount } from '$lib/stores';
 	import { onMount } from 'svelte';
 
 	let { children } = $props();
@@ -11,10 +11,16 @@
 
 	const navItems = [
 		{ href: '/', label: '航标灯档案', icon: 'archive' },
-		{ href: '/stats', label: '数据仪表盘', icon: 'chart' },
+		{ href: '/environment', label: '环境监测', icon: 'thermo' },
+		{ href: '/alert-rules', label: '预警规则', icon: 'rule' },
+		{ href: '/notifications', label: '通知中心', icon: 'bell', badge: $unreadNotificationCount },
+		{ href: '/emergency-meeting', label: '应急会商', icon: 'meeting' },
+		{ href: '/emergency-plan', label: '应急预案', icon: 'plan' },
+		{ href: '/risk-heatmap', label: '风险热力图', icon: 'heatmap' },
+		{ href: '/batch-tasks', label: '批量任务', icon: 'batch' },
 		{ href: '/borrow', label: '借展管理', icon: 'exchange' },
 		{ href: '/repair', label: '修复工单', icon: 'wrench' },
-		{ href: '/environment', label: '环境监测', icon: 'thermo' },
+		{ href: '/stats', label: '数据统计', icon: 'chart' },
 		{ href: '/logs', label: '操作日志', icon: 'list' }
 	];
 
@@ -34,7 +40,7 @@
 
 <svelte:head>
 	<link rel="icon" href={favicon} />
-	<title>多馆区协同 · 航标灯数字化保全与借展管理平台</title>
+	<title>智能预警与跨馆协同应急处置平台</title>
 </svelte:head>
 
 <div class="min-h-screen flex flex-col bg-gray-50">
@@ -48,8 +54,8 @@
 						</svg>
 					</div>
 					<div>
-						<h1 class="text-lg font-bold">航标灯数字化保全与借展管理平台</h1>
-						<p class="text-amber-200 text-xs">多馆区协同 · 全流程数字化管理</p>
+						<h1 class="text-lg font-bold">智能预警与跨馆协同应急处置平台</h1>
+						<p class="text-amber-200 text-xs">多级预警 · 协同处置 · 全流程留痕</p>
 					</div>
 				</div>
 
@@ -124,12 +130,17 @@
 					{#each navItems as item}
 						<a
 							href={item.href}
-							class="whitespace-nowrap px-4 py-2.5 text-sm font-medium transition-colors flex items-center gap-2 {
+							class="whitespace-nowrap px-4 py-2.5 text-sm font-medium transition-colors flex items-center gap-2 relative {
 								$page.url.pathname === item.href || (item.href !== '/' && $page.url.pathname.startsWith(item.href))
 									? 'text-white bg-amber-700/50 border-b-2 border-amber-400'
 									: 'text-amber-100 hover:text-white hover:bg-amber-800/30'
 							}"
 						>
+							{#if item.badge && item.badge > 0}
+								<span class="absolute top-1 right-1 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center leading-none">
+									{item.badge > 99 ? '99+' : item.badge}
+								</span>
+							{/if}
 							{#if item.icon === 'archive'}
 								<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
@@ -155,6 +166,31 @@
 								<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
 								</svg>
+							{:else if item.icon === 'rule'}
+								<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+								</svg>
+							{:else if item.icon === 'bell'}
+								<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 006 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+								</svg>
+							{:else if item.icon === 'meeting'}
+								<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+								</svg>
+							{:else if item.icon === 'plan'}
+								<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+								</svg>
+							{:else if item.icon === 'heatmap'}
+								<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 18.657A8 8 0 016.343 7.343 9 9 0 1017.657 18.657z" />
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.53 15.53A5 5 0 0114.47 10.53" />
+								</svg>
+							{:else if item.icon === 'batch'}
+								<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+								</svg>
 							{/if}
 							{item.label}
 						</a>
@@ -170,7 +206,7 @@
 
 	<footer class="bg-amber-900 text-amber-200 py-4 mt-8">
 		<div class="container mx-auto px-4 text-center text-sm">
-			<p>© 2024 多馆区协同 · 航标灯数字化保全与借展管理平台</p>
+			<p>© 2024 智能预警与跨馆协同应急处置平台</p>
 		</div>
 	</footer>
 </div>

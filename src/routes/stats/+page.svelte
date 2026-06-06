@@ -9,10 +9,16 @@
 		dashboardStats,
 		exportToCSV,
 		downloadCSV,
-		currentUser
+		currentUser,
+		slaRecords,
+		envAlerts,
+		calculateSLAStats,
+		calculateAlertClosureStats,
+		currentMuseumId
 	} from '$lib/stores';
 	import { goto } from '$app/navigation';
-	import type { BeaconLight, MaintenanceRecord, BorrowRequest, RepairOrder } from '$lib/types';
+	import type { BeaconLight, MaintenanceRecord, BorrowRequest, RepairOrder, SLARecord, AlertClosureStats } from '$lib/types';
+	import { SLA_TASK_TYPE_OPTIONS } from '$lib/types';
 	import { getBorrowDaysRemaining, checkBorrowOverdue } from '$lib/validation';
 
 	Chart.register(...registerables);
@@ -21,11 +27,17 @@
 	let exhibitionChartEl: HTMLCanvasElement;
 	let monthlyChartEl: HTMLCanvasElement;
 	let museumChartEl: HTMLCanvasElement;
+	let alertTypeChartEl: HTMLCanvasElement;
+	let slaTaskTypeChartEl: HTMLCanvasElement;
+	let slaTrendChartEl: HTMLCanvasElement;
 
 	let materialChart: Chart | null = null;
 	let exhibitionChart: Chart | null = null;
 	let monthlyChart: Chart | null = null;
 	let museumChart: Chart | null = null;
+	let alertTypeChart: Chart | null = null;
+	let slaTaskTypeChart: Chart | null = null;
+	let slaTrendChart: Chart | null = null;
 
 	let stats = $derived($dashboardStats);
 
@@ -87,6 +99,133 @@
 
 	function getHighPriorityRepairs(): RepairOrder[] {
 		return $repairOrders.filter(r => r.priority === '高' && (r.status === '待分配' || r.status === '修复中'));
+	}
+
+	function getFilteredAlerts() {
+		const user = $currentUser;
+		const museumId = $currentMuseumId;
+		if (user?.role === '系统管理员') {
+			return $envAlerts;
+		}
+		return $envAlerts.filter(a => a.museumId === museumId);
+	}
+
+	function getFilteredSLARecords() {
+		const user = $currentUser;
+		const museumId = $currentMuseumId;
+		if (user?.role === '系统管理员') {
+			return $slaRecords;
+		}
+		return $slaRecords.filter(r => r.museumId === museumId);
+	}
+
+	function getAlertClosureData() {
+		const alerts = getFilteredAlerts();
+		return calculateAlertClosureStats(alerts);
+	}
+
+	function getSLAOverallStats() {
+		const records = getFilteredSLARecords();
+		return calculateSLAStats(records);
+	}
+
+	function getSLAByTaskType() {
+		const records = getFilteredSLARecords();
+		return SLA_TASK_TYPE_OPTIONS.map(type => {
+			const typeRecords = records.filter(r => r.taskType === type);
+			const stats = calculateSLAStats(typeRecords);
+			return { type, ...stats };
+		});
+	}
+
+	function getSLAByRiskLevel() {
+		const records = getFilteredSLARecords();
+		const levels = ['高风险', '中风险', '低风险'] as const;
+		return levels.map(level => {
+			const levelRecords = records.filter(r => r.riskLevel === level);
+			const stats = calculateSLAStats(levelRecords);
+			return { level, ...stats };
+		});
+	}
+
+	function getAlertTypeChartData(closureStats: AlertClosureStats) {
+		return {
+			labels: closureStats.byType.map(t => t.type),
+			datasets: [
+				{
+					label: '总告警数',
+					data: closureStats.byType.map(t => t.total),
+					backgroundColor: 'rgba(146, 64, 14, 0.6)',
+					borderRadius: 4
+				},
+				{
+					label: '已闭环',
+					data: closureStats.byType.map(t => t.closed),
+					backgroundColor: 'rgba(16, 185, 129, 0.7)',
+					borderRadius: 4
+				}
+			]
+		};
+	}
+
+	function getSLATaskTypeChartData() {
+		const data = getSLAByTaskType();
+		return {
+			labels: data.map(d => d.type),
+			datasets: [
+				{
+					label: 'SLA达标率(%)',
+					data: data.map(d => d.onTimeRate),
+					backgroundColor: 'rgba(146, 64, 14, 0.7)',
+					borderRadius: 4
+				},
+				{
+					label: '首次响应达标率(%)',
+					data: data.map(d => d.firstResponseOnTimeRate),
+					backgroundColor: 'rgba(245, 158, 11, 0.7)',
+					borderRadius: 4
+				}
+			]
+		};
+	}
+
+	function getSLATrendData() {
+		const records = getFilteredSLARecords();
+		const monthMap: Record<string, { onTime: number; total: number }> = {};
+
+		records.forEach(r => {
+			const month = r.createdAt.slice(0, 7);
+			if (!monthMap[month]) {
+				monthMap[month] = { onTime: 0, total: 0 };
+			}
+			monthMap[month].total++;
+			if (r.isOnTime) {
+				monthMap[month].onTime++;
+			}
+		});
+
+		const sortedMonths = Object.keys(monthMap).sort();
+		const labels = sortedMonths.map(m => {
+			const [y, mon] = m.split('-');
+			return `${y}年${parseInt(mon)}月`;
+		});
+		const data = sortedMonths.map(m =>
+			monthMap[m].total > 0 ? Math.round((monthMap[m].onTime / monthMap[m].total) * 100) : 0
+		);
+
+		return { labels, data };
+	}
+
+	function formatHours(hours: number): string {
+		if (hours < 1) {
+			return `${Math.round(hours * 60)}分钟`;
+		}
+		if (hours < 24) {
+			return `${hours.toFixed(1)}小时`;
+		}
+		const days = Math.floor(hours / 24);
+		const remainHours = Math.round(hours % 24);
+		return `${days}天${remainHours}小时`;
 	}
 
 	function initCharts() {
@@ -257,6 +396,120 @@
 				}
 			});
 		}
+
+		const closureStats = getAlertClosureData();
+		const alertTypeChartData = getAlertTypeChartData(closureStats);
+		alertTypeChart = new Chart(alertTypeChartEl, {
+			type: 'bar',
+			data: alertTypeChartData,
+			options: {
+				responsive: true,
+				maintainAspectRatio: false,
+				plugins: {
+					legend: {
+						position: 'bottom',
+						labels: { padding: 15, usePointStyle: true }
+					},
+					title: {
+						display: true,
+						text: '按告警类型闭环统计',
+						font: { size: 16, weight: 'bold' as const },
+						color: '#78350f',
+						padding: { bottom: 20 }
+					}
+				},
+				scales: {
+					y: {
+						beginAtZero: true,
+						ticks: { stepSize: 1 },
+						grid: { color: 'rgba(0, 0, 0, 0.05)' }
+					},
+					x: {
+						grid: { display: false }
+					}
+				}
+			}
+		});
+
+		const slaTaskTypeData = getSLATaskTypeChartData();
+		slaTaskTypeChart = new Chart(slaTaskTypeChartEl, {
+			type: 'bar',
+			data: slaTaskTypeData,
+			options: {
+				responsive: true,
+				maintainAspectRatio: false,
+				plugins: {
+					legend: {
+						position: 'bottom',
+						labels: { padding: 15, usePointStyle: true }
+					},
+					title: {
+						display: true,
+						text: '按任务类型 SLA 统计',
+						font: { size: 16, weight: 'bold' as const },
+						color: '#78350f',
+						padding: { bottom: 20 }
+					}
+				},
+				scales: {
+					y: {
+						beginAtZero: true,
+						max: 100,
+						ticks: { callback: (v) => v + '%' },
+						grid: { color: 'rgba(0, 0, 0, 0.05)' }
+					},
+					x: {
+						grid: { display: false }
+					}
+				}
+			}
+		});
+
+		const slaTrendData = getSLATrendData();
+		slaTrendChart = new Chart(slaTrendChartEl, {
+			type: 'line',
+			data: {
+				labels: slaTrendData.labels,
+				datasets: [{
+					label: 'SLA达标率',
+					data: slaTrendData.data,
+					borderColor: 'rgba(146, 64, 14, 1)',
+					backgroundColor: 'rgba(146, 64, 14, 0.1)',
+					fill: true,
+					tension: 0.4,
+					pointBackgroundColor: 'rgba(146, 64, 14, 1)',
+					pointRadius: 4
+				}]
+			},
+			options: {
+				responsive: true,
+				maintainAspectRatio: false,
+				plugins: {
+					legend: {
+						position: 'bottom',
+						labels: { padding: 15, usePointStyle: true }
+					},
+					title: {
+						display: true,
+						text: 'SLA 达标率趋势',
+						font: { size: 16, weight: 'bold' as const },
+						color: '#78350f',
+						padding: { bottom: 20 }
+					}
+				},
+				scales: {
+					y: {
+						beginAtZero: true,
+						max: 100,
+						ticks: { callback: (v) => v + '%' },
+						grid: { color: 'rgba(0, 0, 0, 0.05)' }
+					},
+					x: {
+						grid: { display: false }
+					}
+				}
+			}
+		});
 	}
 
 	function updateCharts() {
@@ -282,6 +535,30 @@
 			museumChart.data.datasets[0].data = museumData.data;
 			museumChart.update();
 		}
+
+		if (alertTypeChart) {
+			const closureStats = getAlertClosureData();
+			const alertTypeChartData = getAlertTypeChartData(closureStats);
+			alertTypeChart.data.labels = alertTypeChartData.labels;
+			alertTypeChart.data.datasets[0].data = alertTypeChartData.datasets[0].data;
+			alertTypeChart.data.datasets[1].data = alertTypeChartData.datasets[1].data;
+			alertTypeChart.update();
+		}
+
+		if (slaTaskTypeChart) {
+			const slaTaskTypeData = getSLATaskTypeChartData();
+			slaTaskTypeChart.data.labels = slaTaskTypeData.labels;
+			slaTaskTypeChart.data.datasets[0].data = slaTaskTypeData.datasets[0].data;
+			slaTaskTypeChart.data.datasets[1].data = slaTaskTypeData.datasets[1].data;
+			slaTaskTypeChart.update();
+		}
+
+		if (slaTrendChart) {
+			const slaTrendData = getSLATrendData();
+			slaTrendChart.data.labels = slaTrendData.labels;
+			slaTrendChart.data.datasets[0].data = slaTrendData.data;
+			slaTrendChart.update();
+		}
 	}
 
 	function destroyCharts() {
@@ -289,6 +566,9 @@
 		exhibitionChart?.destroy();
 		monthlyChart?.destroy();
 		museumChart?.destroy();
+		alertTypeChart?.destroy();
+		slaTaskTypeChart?.destroy();
+		slaTrendChart?.destroy();
 	}
 
 	function handleExport(type: 'beaconLights' | 'borrowRequests' | 'repairOrders') {
@@ -318,6 +598,10 @@
 	const warningBorrows = $derived(getWarningBorrows());
 	const overdueBorrows = $derived(getOverdueBorrows());
 	const highPriorityRepairs = $derived(getHighPriorityRepairs());
+	const alertClosureStats = $derived(getAlertClosureData());
+	const slaOverallStats = $derived(getSLAOverallStats());
+	const slaByTaskTypeStats = $derived(getSLAByTaskType());
+	const slaByRiskLevelStats = $derived(getSLAByRiskLevel());
 </script>
 
 <div class="space-y-6">
@@ -541,5 +825,161 @@
 				</div>
 			</div>
 		{/if}
+	</div>
+
+	<!-- 告警闭环率分析 -->
+	<div class="bg-white rounded-xl shadow-md p-6">
+		<h3 class="text-lg font-semibold text-amber-900 mb-5">告警闭环率分析</h3>
+
+		<!-- 闭环率总览卡片 -->
+		<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+			<div class="bg-amber-50 rounded-lg p-4 text-center border-l-4 border-amber-500">
+				<p class="text-2xl font-bold text-amber-800">{alertClosureStats.totalAlerts}</p>
+				<p class="text-sm text-amber-600 mt-1">总告警数</p>
+			</div>
+			<div class="bg-emerald-50 rounded-lg p-4 text-center border-l-4 border-emerald-500">
+				<p class="text-2xl font-bold text-emerald-800">{alertClosureStats.closedAlerts}</p>
+				<p class="text-sm text-emerald-600 mt-1">已闭环</p>
+			</div>
+			<div class="bg-blue-50 rounded-lg p-4 text-center border-l-4 border-blue-500">
+				<p class="text-2xl font-bold text-blue-800">{alertClosureStats.closureRate}%</p>
+				<p class="text-sm text-blue-600 mt-1">闭环率</p>
+			</div>
+			<div class="bg-purple-50 rounded-lg p-4 text-center border-l-4 border-purple-500">
+				<p class="text-2xl font-bold text-purple-800">{formatHours(alertClosureStats.avgClosureHours)}</p>
+				<p class="text-sm text-purple-600 mt-1">平均闭环时长</p>
+			</div>
+		</div>
+
+		<!-- 按风险等级的闭环率统计 -->
+		<div class="mb-6">
+			<h4 class="text-md font-medium text-amber-800 mb-3">按风险等级闭环率</h4>
+			<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+				{#each alertClosureStats.byRiskLevel as risk}
+					<div class="border border-gray-200 rounded-lg p-4">
+						<div class="flex items-center justify-between mb-2">
+							<span class="font-medium text-gray-700">{risk.level}</span>
+							<span class="text-sm font-bold text-amber-600">{risk.closureRate}%</span>
+						</div>
+						<div class="w-full bg-gray-200 rounded-full h-2">
+							<div
+								class="h-2 rounded-full {
+									risk.level === '高风险' ? 'bg-red-500' :
+									risk.level === '中风险' ? 'bg-amber-500' : 'bg-emerald-500'
+								}"
+								style="width: {risk.closureRate}%"
+							></div>
+						</div>
+						<div class="flex justify-between mt-2 text-xs text-gray-500">
+							<span>已闭环 {risk.closed}</span>
+							<span>总计 {risk.total}</span>
+						</div>
+					</div>
+				{/each}
+			</div>
+		</div>
+
+		<!-- 按告警类型和馆区的统计 -->
+		<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+			<!-- 按告警类型的闭环率柱状图 -->
+			<div>
+				<div class="h-72">
+					<canvas bind:this={alertTypeChartEl}></canvas>
+				</div>
+			</div>
+
+			<!-- 按馆区的闭环率统计 -->
+			<div>
+				<h4 class="text-md font-medium text-amber-800 mb-3">按馆区闭环率</h4>
+				<div class="space-y-3">
+					{#each alertClosureStats.byMuseum as museum}
+						<div class="border border-gray-200 rounded-lg p-3">
+							<div class="flex items-center justify-between mb-2">
+								<span class="font-medium text-gray-700 text-sm">{museum.museumName}</span>
+								<span class="text-sm font-bold text-amber-600">{museum.closureRate}%</span>
+							</div>
+							<div class="w-full bg-gray-200 rounded-full h-2">
+								<div
+									class="h-2 rounded-full bg-amber-500"
+									style="width: {museum.closureRate}%"
+								></div>
+							</div>
+							<div class="flex justify-between mt-1 text-xs text-gray-500">
+								<span>已闭环 {museum.closed}</span>
+								<span>总计 {museum.total}</span>
+							</div>
+						</div>
+					{:else}
+						<div class="text-center text-gray-400 py-8">暂无馆区数据</div>
+					{/each}
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- 整改 SLA 统计 -->
+	<div class="bg-white rounded-xl shadow-md p-6">
+		<h3 class="text-lg font-semibold text-amber-900 mb-5">整改 SLA 统计</h3>
+
+		<!-- SLA 达标率总览卡片 -->
+		<div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
+			<div class="bg-emerald-50 rounded-lg p-4 text-center border-l-4 border-emerald-500">
+				<p class="text-2xl font-bold text-emerald-800">{slaOverallStats.onTimeRate}%</p>
+				<p class="text-sm text-emerald-600 mt-1">SLA 达标率</p>
+			</div>
+			<div class="bg-blue-50 rounded-lg p-4 text-center border-l-4 border-blue-500">
+				<p class="text-2xl font-bold text-blue-800">{slaOverallStats.firstResponseOnTimeRate}%</p>
+				<p class="text-sm text-blue-600 mt-1">首次响应达标率</p>
+			</div>
+			<div class="bg-amber-50 rounded-lg p-4 text-center border-l-4 border-amber-500">
+				<p class="text-2xl font-bold text-amber-800">{formatHours(slaOverallStats.avgHours)}</p>
+				<p class="text-sm text-amber-600 mt-1">平均完成时长</p>
+			</div>
+		</div>
+
+		<!-- 按任务类型和风险等级的 SLA 统计 -->
+		<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+			<!-- 按任务类型的 SLA 统计 -->
+			<div>
+				<div class="h-72">
+					<canvas bind:this={slaTaskTypeChartEl}></canvas>
+				</div>
+			</div>
+
+			<!-- 按风险等级的 SLA 统计 -->
+			<div>
+				<h4 class="text-md font-medium text-amber-800 mb-3">按风险等级 SLA 达标率</h4>
+				<div class="space-y-3">
+					{#each slaByRiskLevelStats as risk}
+						<div class="border border-gray-200 rounded-lg p-4">
+							<div class="flex items-center justify-between mb-2">
+								<span class="font-medium text-gray-700">{risk.level}</span>
+								<span class="text-sm font-bold text-amber-600">{risk.onTimeRate}%</span>
+							</div>
+							<div class="w-full bg-gray-200 rounded-full h-2">
+								<div
+									class="h-2 rounded-full {
+										risk.level === '高风险' ? 'bg-red-500' :
+										risk.level === '中风险' ? 'bg-amber-500' : 'bg-emerald-500'
+									}"
+									style="width: {risk.onTimeRate}%"
+								></div>
+							</div>
+							<div class="flex justify-between mt-2 text-xs text-gray-500">
+								<span>达标 {risk.onTime}</span>
+								<span>总计 {risk.total}</span>
+							</div>
+						</div>
+					{/each}
+				</div>
+			</div>
+		</div>
+
+		<!-- SLA 趋势图 -->
+		<div>
+			<div class="h-72">
+				<canvas bind:this={slaTrendChartEl}></canvas>
+			</div>
+		</div>
 	</div>
 </div>

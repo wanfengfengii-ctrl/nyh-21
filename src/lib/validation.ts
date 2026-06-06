@@ -1,4 +1,4 @@
-import type { BeaconLight, MaintenanceRecord, LampshadeInspection, LightSourceReplacement, ExhibitionStatusHistory, BorrowRequest, RepairOrder, LampshadeStatus, ExhibitionStatus, EnvMonitorPoint, EnvMonitorRecord, EnvThresholdConfig, EnvAlert, RectificationTask, EnvMonitorDataType, SaltFogLevel } from './types';
+import type { BeaconLight, MaintenanceRecord, LampshadeInspection, LightSourceReplacement, ExhibitionStatusHistory, BorrowRequest, RepairOrder, LampshadeStatus, ExhibitionStatus, EnvMonitorPoint, EnvMonitorRecord, EnvThresholdConfig, EnvAlert, RectificationTask, EnvMonitorDataType, SaltFogLevel, AlertRule, EmergencyMeeting, EmergencyPlan, BatchTask, Notification, AlertEscalationLevel } from './types';
 
 export function generateId(): string {
 	return Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
@@ -517,4 +517,235 @@ export function calculateOverallRiskLevel(alerts: { level: '低风险' | '中风
 export function getSaltFogLevelIndex(level: SaltFogLevel): number {
 	const order: SaltFogLevel[] = ['无', '轻微', '中等', '严重'];
 	return order.indexOf(level);
+}
+
+export function validateAlertRule(rule: Partial<AlertRule>): ValidationResult {
+	const errors: string[] = [];
+
+	if (!rule.name || rule.name.trim() === '') {
+		errors.push('规则名称不能为空');
+	}
+
+	if (!rule.type) {
+		errors.push('请选择规则类型');
+	}
+
+	if (!rule.riskLevel) {
+		errors.push('请选择风险等级');
+	}
+
+	if (!rule.conditions || rule.conditions.length === 0) {
+		errors.push('至少添加一个条件');
+	}
+
+	if (rule.conditions && rule.conditions.length > 0) {
+		rule.conditions.forEach((cond, idx) => {
+			if (!cond.field) {
+				errors.push(`第${idx + 1}个条件字段不能为空`);
+			}
+			if (!cond.operator) {
+				errors.push(`第${idx + 1}个条件运算符不能为空`);
+			}
+			if (cond.value === undefined || cond.value === null || cond.value === '') {
+				errors.push(`第${idx + 1}个条件值不能为空`);
+			}
+		});
+	}
+
+	if (!rule.actions || rule.actions.length === 0) {
+		errors.push('至少添加一个动作');
+	}
+
+	if (rule.escalationEnabled) {
+		if (!rule.escalationRules || rule.escalationRules.length === 0) {
+			errors.push('启用升级机制时至少添加一条升级规则');
+		}
+	}
+
+	return { valid: errors.length === 0, errors };
+}
+
+export function validateEmergencyMeeting(meeting: Partial<EmergencyMeeting>): ValidationResult {
+	const errors: string[] = [];
+
+	if (!meeting.title || meeting.title.trim() === '') {
+		errors.push('会议标题不能为空');
+	}
+
+	if (!meeting.riskLevel) {
+		errors.push('请选择风险等级');
+	}
+
+	if (!meeting.priority) {
+		errors.push('请选择优先级');
+	}
+
+	if (!meeting.scheduledAt) {
+		errors.push('请选择会议时间');
+	}
+
+	if (!meeting.participants || meeting.participants.length === 0) {
+		errors.push('至少邀请一位参会人员');
+	}
+
+	return { valid: errors.length === 0, errors };
+}
+
+export function validateEmergencyPlan(plan: Partial<EmergencyPlan>): ValidationResult {
+	const errors: string[] = [];
+
+	if (!plan.name || plan.name.trim() === '') {
+		errors.push('预案名称不能为空');
+	}
+
+	if (!plan.category) {
+		errors.push('请选择预案分类');
+	}
+
+	if (!plan.riskLevel) {
+		errors.push('请选择风险等级');
+	}
+
+	if (!plan.scope || plan.scope.trim() === '') {
+		errors.push('请填写适用范围');
+	}
+
+	if (!plan.steps || plan.steps.length === 0) {
+		errors.push('至少添加一个处置步骤');
+	}
+
+	if (!plan.responsibleRoles || plan.responsibleRoles.length === 0) {
+		errors.push('至少指定一个负责角色');
+	}
+
+	if (!plan.version || plan.version.trim() === '') {
+		errors.push('请填写版本号');
+	}
+
+	return { valid: errors.length === 0, errors };
+}
+
+export function validateBatchTask(task: Partial<BatchTask>): ValidationResult {
+	const errors: string[] = [];
+
+	if (!task.title || task.title.trim() === '') {
+		errors.push('任务标题不能为空');
+	}
+
+	if (!task.type) {
+		errors.push('请选择任务类型');
+	}
+
+	if (!task.priority) {
+		errors.push('请选择优先级');
+	}
+
+	if (!task.items || task.items.length === 0) {
+		errors.push('至少添加一个处理项');
+	}
+
+	return { valid: errors.length === 0, errors };
+}
+
+export function validateExhibitionStatusChangeWithRisk(
+	beaconLightId: string,
+	toStatus: string,
+	envRiskAssessments?: { beaconLightId: string; riskLevel: string }[]
+): ValidationResult {
+	const errors: string[] = [];
+
+	if (toStatus === '展出中' || toStatus === '可展出') {
+		const riskAssessment = envRiskAssessments?.find(r => r.beaconLightId === beaconLightId);
+		if (riskAssessment && riskAssessment.riskLevel === '高风险') {
+			errors.push('高风险藏品未解除前不得恢复展出');
+		}
+	}
+
+	return { valid: errors.length === 0, errors };
+}
+
+export function isBeaconLightHighRisk(
+	beaconLightId: string,
+	riskAssessments?: { beaconLightId: string; riskLevel: string }[]
+): boolean {
+	if (!riskAssessments) return false;
+	const assessment = riskAssessments.find(r => r.beaconLightId === beaconLightId);
+	return assessment?.riskLevel === '高风险';
+}
+
+export function shouldEscalateAlert(
+	alertCreatedAt: string,
+	escalationMinutes: number
+): boolean {
+	const created = new Date(alertCreatedAt).getTime();
+	const now = Date.now();
+	const elapsed = (now - created) / (1000 * 60);
+	return elapsed >= escalationMinutes;
+}
+
+export function calculateAlertAgeMinutes(createdAt: string): number {
+	const created = new Date(createdAt).getTime();
+	const now = Date.now();
+	return Math.floor((now - created) / (1000 * 60));
+}
+
+export function getNextEscalationLevel(
+	currentLevel: AlertEscalationLevel | undefined
+): AlertEscalationLevel {
+	if (!currentLevel) return 2;
+	if (currentLevel >= 5) return 5;
+	return (currentLevel + 1) as AlertEscalationLevel;
+}
+
+export function formatDuration(minutes: number): string {
+	if (minutes < 60) return `${minutes}分钟`;
+	const hours = Math.floor(minutes / 60);
+	const mins = minutes % 60;
+	if (hours < 24) return `${hours}小时${mins > 0 ? mins + '分钟' : ''}`;
+	const days = Math.floor(hours / 24);
+	const remainingHours = hours % 24;
+	return `${days}天${remainingHours > 0 ? remainingHours + '小时' : ''}`;
+}
+
+export function calculateSLATargetHours(riskLevel: string, taskType: string): number {
+	const baseTargets: Record<string, Record<string, number>> = {
+		'高风险': { '整改任务': 24, '修复工单': 48, '告警响应': 1 },
+		'中风险': { '整改任务': 72, '修复工单': 96, '告警响应': 4 },
+		'低风险': { '整改任务': 168, '修复工单': 168, '告警响应': 24 }
+	};
+	return baseTargets[riskLevel]?.[taskType] || 24;
+}
+
+export function calculateRiskScore(
+	highCount: number,
+	mediumCount: number,
+	lowCount: number
+): number {
+	return highCount * 100 + mediumCount * 30 + lowCount * 10;
+}
+
+export function exportToCSV(data: any[], columns: { key: string; label: string }[]): string {
+	const header = columns.map(c => c.label).join(',');
+	const rows = data.map(row =>
+		columns.map(c => {
+			const value = row[c.key];
+			if (typeof value === 'string' && value.includes(',')) {
+				return `"${value}"`;
+			}
+			return value ?? '';
+		}).join(',')
+	);
+	return [header, ...rows].join('\n');
+}
+
+export function downloadCSV(content: string, filename: string): void {
+	const blob = new Blob(['\ufeff' + content], { type: 'text/csv;charset=utf-8;' });
+	const url = URL.createObjectURL(blob);
+	const link = document.createElement('a');
+	link.href = url;
+	link.download = filename;
+	document.body.appendChild(link);
+	link.click();
+	document.body.removeChild(link);
+	URL.revokeObjectURL(url);
 }

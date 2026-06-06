@@ -1,5 +1,5 @@
 import { writable, derived, get } from 'svelte/store';
-import { generateId, getToday, validateBeaconLight, checkBorrowOverdue, isDateBefore, getDefaultExhibitionStatus, validateEnvMonitorPoint, validateEnvMonitorRecord, validateThresholdConfig, validateRectificationTask, checkEnvThreshold, calculateOverallRiskLevel } from './validation';
+import { generateId, getToday, validateBeaconLight, checkBorrowOverdue, isDateBefore, getDefaultExhibitionStatus, validateEnvMonitorPoint, validateEnvMonitorRecord, validateThresholdConfig, validateRectificationTask, checkEnvThreshold, calculateOverallRiskLevel, validateAlertRule, validateEmergencyMeeting, validateEmergencyPlan, validateBatchTask, shouldEscalateAlert, calculateAlertAgeMinutes, getNextEscalationLevel, calculateSLATargetHours, calculateRiskScore, formatDuration, exportToCSV as exportCSVUtil, downloadCSV as downloadCSVUtil } from './validation';
 import type {
 	BeaconLight,
 	MaintenanceRecord,
@@ -29,7 +29,17 @@ import type {
 	EnvMonitorDataType,
 	RiskLevel,
 	AlertStatus,
-	RectificationTaskStatus
+	RectificationTaskStatus,
+	AlertRule,
+	Notification,
+	EmergencyMeeting,
+	EmergencyPlan,
+	DisposalTimelineEvent,
+	BatchTask,
+	BatchTaskItem,
+	SLARecord,
+	AlertEscalationLevel,
+	DisposalTimelineEventType
 } from './types';
 
 const STORAGE_KEY = 'beacon_light_platform_v2';
@@ -52,6 +62,13 @@ interface PersistentState {
 	envAlerts: EnvAlert[];
 	envRiskAssessments: EnvRiskAssessment[];
 	rectificationTasks: RectificationTask[];
+	alertRules: AlertRule[];
+	notifications: Notification[];
+	emergencyMeetings: EmergencyMeeting[];
+	emergencyPlans: EmergencyPlan[];
+	disposalTimelineEvents: DisposalTimelineEvent[];
+	batchTasks: BatchTask[];
+	slaRecords: SLARecord[];
 	currentUserId: string;
 	currentMuseumId: string;
 }
@@ -888,6 +905,407 @@ const mockRectificationTasks: RectificationTask[] = [
 	}
 ];
 
+const mockAlertRules: AlertRule[] = [
+	{
+		id: 'ar1',
+		name: '温度高风险告警规则',
+		description: '监测点温度超过阈值上限50%时触发高风险告警',
+		type: '环境阈值',
+		enabled: true,
+		riskLevel: '高风险',
+		conditions: [
+			{ id: 'c1', field: 'temperature', operator: '>', value: 25, logicOperator: 'AND' }
+		],
+		conditionLogic: 'ALL',
+		actions: [
+			{ id: 'a1', type: '站内通知', target: '保管员', template: '温度超标告警' },
+			{ id: 'a2', type: '短信通知', target: '馆区管理员', template: '温度超标告警' }
+		],
+		escalationEnabled: true,
+		escalationRules: [
+			{ id: 'er1', level: 1, timeoutMinutes: 30, notifyRoles: ['保管员'], notifyUsers: [], actions: [{ id: 'ea1', type: '站内通知', target: '保管员' }] },
+			{ id: 'er2', level: 2, timeoutMinutes: 60, notifyRoles: ['馆区管理员'], notifyUsers: [], actions: [{ id: 'ea2', type: '短信通知', target: '馆区管理员' }] },
+			{ id: 'er3', level: 3, timeoutMinutes: 120, notifyRoles: ['系统管理员'], notifyUsers: [], actions: [{ id: 'ea3', type: '邮件通知', target: '系统管理员' }] }
+		],
+		createdBy: '系统管理员',
+		createdAt: '2024-01-01',
+		updatedAt: '2024-03-15'
+	},
+	{
+		id: 'ar2',
+		name: '湿度超标告警规则',
+		description: '监测点湿度超过阈值时触发告警',
+		type: '环境阈值',
+		enabled: true,
+		riskLevel: '中风险',
+		conditions: [
+			{ id: 'c1', field: 'humidity', operator: '>', value: 60, logicOperator: 'AND' }
+		],
+		conditionLogic: 'ALL',
+		actions: [
+			{ id: 'a1', type: '站内通知', target: '保管员', template: '湿度超标告警' }
+		],
+		escalationEnabled: true,
+		escalationRules: [
+			{ id: 'er1', level: 1, timeoutMinutes: 60, notifyRoles: ['保管员'], notifyUsers: [], actions: [{ id: 'ea1', type: '站内通知', target: '保管员' }] },
+			{ id: 'er2', level: 2, timeoutMinutes: 180, notifyRoles: ['馆区管理员'], notifyUsers: [], actions: [{ id: 'ea2', type: '短信通知', target: '馆区管理员' }] }
+		],
+		createdBy: '系统管理员',
+		createdAt: '2024-01-01',
+		updatedAt: '2024-02-20'
+	},
+	{
+		id: 'ar3',
+		name: '借展逾期自动提醒',
+		description: '借展到期前7天自动提醒，逾期自动升级',
+		type: '借展逾期',
+		enabled: true,
+		riskLevel: '中风险',
+		conditions: [
+			{ id: 'c1', field: 'daysRemaining', operator: '<=', value: 7, logicOperator: 'AND' }
+		],
+		conditionLogic: 'ALL',
+		actions: [
+			{ id: 'a1', type: '站内通知', target: '馆区管理员', template: '借展到期提醒' }
+		],
+		escalationEnabled: false,
+		escalationRules: [],
+		createdBy: '系统管理员',
+		createdAt: '2024-02-01',
+		updatedAt: '2024-02-01'
+	}
+];
+
+const mockNotifications: Notification[] = [
+	{
+		id: 'n1',
+		userId: 'u2',
+		userName: '王馆长',
+		channel: '站内',
+		type: '告警通知',
+		title: '【高风险告警】主馆文物库房3号柜温度超标',
+		content: '主馆文物库房3号柜当前温度28.5°C，超出阈值范围15-22°C，请及时处理。',
+		alertId: 'ea1',
+		status: '未读',
+		createdAt: '2024-06-01 10:00:00',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆'
+	},
+	{
+		id: 'n2',
+		userId: 'u2',
+		userName: '王馆长',
+		channel: '站内',
+		type: '升级通知',
+		title: '【告警升级】震动告警已升级至2级',
+		content: '主馆文物库房3号柜震动告警超过30分钟未响应，已自动升级至2级，请馆区管理员关注。',
+		alertId: 'ea3',
+		status: '已读',
+		readAt: '2024-06-01 15:00:00',
+		createdAt: '2024-06-01 14:30:00',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆'
+	},
+	{
+		id: 'n3',
+		userId: 'u3',
+		userName: '张保管',
+		channel: '短信',
+		type: '任务通知',
+		title: '您有新的整改任务待处理',
+		content: '您被分配了"库房3号柜温湿度超标整改"任务，请及时处理。',
+		taskId: 'rt1',
+		status: '已读',
+		readAt: '2024-06-02 09:00:00',
+		createdAt: '2024-06-01 16:00:00',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆'
+	}
+];
+
+const mockEmergencyMeetings: EmergencyMeeting[] = [
+	{
+		id: 'em1',
+		title: '库房温湿度超标应急会商会',
+		description: '主馆文物库房3号柜多项环境指标超标，召开跨馆应急会商讨论处置方案。',
+		alertId: 'ea1',
+		riskLevel: '高风险',
+		priority: '紧急',
+		status: '进行中',
+		initiatorId: 'u2',
+		initiatorName: '王馆长',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆',
+		participants: [
+			{ userId: 'u2', userName: '王馆长', userRole: '馆区管理员', museumId: 'm1', museumName: '海事博物馆主馆', status: '已出席', joinedAt: '2024-06-01 14:00:00' },
+			{ userId: 'u5', userName: '陈馆长', userRole: '馆区管理员', museumId: 'm2', museumName: '上海海事分馆', status: '已出席', joinedAt: '2024-06-01 14:05:00' },
+			{ userId: 'u3', userName: '张保管', userRole: '保管员', museumId: 'm1', museumName: '海事博物馆主馆', status: '已出席', joinedAt: '2024-06-01 14:02:00' },
+			{ userId: 'u4', userName: '李研究员', userRole: '研究员', museumId: 'm1', museumName: '海事博物馆主馆', status: '已确认' }
+		],
+		messages: [
+			{ id: 'm1', meetingId: 'em1', userId: 'u2', userName: '王馆长', userRole: '馆区管理员', content: '各位好，今天库房3号柜温度和湿度都超标了，我们开个紧急会议讨论一下处置方案。', timestamp: '2024-06-01 14:00:00' },
+			{ id: 'm2', meetingId: 'em1', userId: 'u3', userName: '张保管', userRole: '保管员', content: '我已经去现场看过了，空调系统运行正常，但库房密封胶条有老化现象，可能是这个原因。', timestamp: '2024-06-01 14:05:00' },
+			{ id: 'm3', meetingId: 'em1', userId: 'u5', userName: '陈馆长', userRole: '馆区管理员', content: '上海分馆之前也遇到过类似情况，建议先临时加放除湿设备，同时安排维修密封胶条。', timestamp: '2024-06-01 14:10:00' }
+		],
+		scheduledAt: '2024-06-01 14:00:00',
+		startedAt: '2024-06-01 14:00:00',
+		createdAt: '2024-06-01 13:50:00',
+		updatedAt: '2024-06-01 14:10:00'
+	}
+];
+
+const mockEmergencyPlans: EmergencyPlan[] = [
+	{
+		id: 'ep1',
+		name: '环境温湿度超标应急预案',
+		category: '环境突发事件',
+		description: '针对展柜或库房温湿度超出安全阈值的应急处置预案',
+		riskLevel: '高风险',
+		status: '已发布',
+		scope: '所有馆区的展柜和库房环境监测点',
+		steps: [
+			{ id: 's1', stepNumber: 1, title: '告警确认与初步评估', description: '保管员收到告警后15分钟内到达现场，确认告警真实性，评估影响范围和严重程度', responsibleRole: '保管员', durationMinutes: 15 },
+			{ id: 's2', stepNumber: 2, title: '临时应急措施', description: '采取临时措施：调整空调温度、开启备用除湿机、转移易损藏品等', responsibleRole: '保管员', durationMinutes: 30, requiredResources: ['便携式温湿度计', '备用除湿机', '移动展柜'] },
+			{ id: 's3', stepNumber: 3, title: '上报与升级', description: '高风险告警需立即上报馆区管理员，2小时内未解决需上报系统管理员', responsibleRole: '保管员', durationMinutes: 10 },
+			{ id: 's4', stepNumber: 4, title: '故障排查与修复', description: '技术人员排查设备故障原因，进行维修或更换', responsibleRole: '修复师', durationMinutes: 120 },
+			{ id: 's5', stepNumber: 5, title: '效果验证与记录', description: '修复后持续监测24小时，确认环境指标稳定恢复正常，记录完整处置过程', responsibleRole: '保管员', durationMinutes: 1440 }
+		],
+		responsibleRoles: ['馆区管理员', '保管员', '修复师'],
+		contactList: [
+			{ name: '王馆长', role: '馆区管理员', phone: '13800000002', email: 'wang@museum.com' },
+			{ name: '张保管', role: '保管员', phone: '13800000003', email: 'zhang@museum.com' },
+			{ name: '刘修复师', role: '修复师', phone: '13800000006', email: 'liu@museum.com' }
+		],
+		resources: ['便携式温湿度计', '备用除湿机', '移动展柜', '密封胶条', '空调遥控器'],
+		version: 'v2.1',
+		createdBy: '系统管理员',
+		createdAt: '2024-01-01',
+		updatedAt: '2024-03-15',
+		publishedAt: '2024-03-15'
+	},
+	{
+		id: 'ep2',
+		name: '藏品损坏应急处置预案',
+		category: '藏品损坏',
+		description: '针对藏品发现损坏或状态恶化时的应急处置流程',
+		riskLevel: '高风险',
+		status: '已发布',
+		scope: '所有馆藏航标灯类藏品',
+		steps: [
+			{ id: 's1', stepNumber: 1, title: '发现与保护', description: '发现藏品损坏后，立即停止操作，保持现场原状，做好防护措施', responsibleRole: '保管员', durationMinutes: 10 },
+			{ id: 's2', stepNumber: 2, title: '上报与评估', description: '立即上报馆区管理员和研究员，进行初步评估和拍照记录', responsibleRole: '保管员', durationMinutes: 20 },
+			{ id: 's3', stepNumber: 3, title: '应急会商', description: '组织跨馆专家进行应急会商，制定修复方案', responsibleRole: '馆区管理员', durationMinutes: 60 },
+			{ id: 's4', stepNumber: 4, title: '实施修复', description: '按照修复方案实施修复工作，做好过程记录', responsibleRole: '修复师', durationMinutes: 480 }
+		],
+		responsibleRoles: ['馆区管理员', '保管员', '研究员', '修复师'],
+		contactList: [
+			{ name: '王馆长', role: '馆区管理员', phone: '13800000002', email: 'wang@museum.com' },
+			{ name: '李研究员', role: '研究员', phone: '13800000004', email: 'li@museum.com' },
+			{ name: '刘修复师', role: '修复师', phone: '13800000006', email: 'liu@museum.com' }
+		],
+		version: 'v1.5',
+		createdBy: '系统管理员',
+		createdAt: '2024-02-01',
+		updatedAt: '2024-04-10',
+		publishedAt: '2024-04-10'
+	}
+];
+
+const mockDisposalTimelineEvents: DisposalTimelineEvent[] = [
+	{
+		id: 'dt1',
+		alertId: 'ea1',
+		eventType: '告警产生',
+		title: '温度高风险告警',
+		description: '主馆文物库房3号柜温度达到28.5°C，超出阈值范围，触发高风险告警',
+		operatorName: '系统',
+		operatorRole: '系统',
+		timestamp: '2024-06-01 10:00:00',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆'
+	},
+	{
+		id: 'dt2',
+		alertId: 'ea1',
+		eventType: '告警确认',
+		title: '保管员确认告警',
+		description: '张保管已到达现场确认告警属实，温度确实超标',
+		operatorId: 'u3',
+		operatorName: '张保管',
+		operatorRole: '保管员',
+		fromStatus: '待处理',
+		toStatus: '处理中',
+		timestamp: '2024-06-01 10:25:00',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆'
+	},
+	{
+		id: 'dt3',
+		alertId: 'ea1',
+		eventType: '告警升级',
+		title: '告警自动升级至2级',
+		description: '告警超过30分钟未解决，已自动升级至2级，通知馆区管理员',
+		operatorName: '系统',
+		operatorRole: '系统',
+		escalationLevel: 2,
+		timestamp: '2024-06-01 10:35:00',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆'
+	},
+	{
+		id: 'dt4',
+		alertId: 'ea1',
+		eventType: '创建整改',
+		title: '创建整改任务',
+		description: '王馆长创建整改任务"库房3号柜温湿度超标整改"，分配给张保管',
+		operatorId: 'u2',
+		operatorName: '王馆长',
+		operatorRole: '馆区管理员',
+		timestamp: '2024-06-01 11:00:00',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆'
+	},
+	{
+		id: 'dt5',
+		alertId: 'ea1',
+		eventType: '应急会商',
+		title: '召开跨馆应急会商',
+		description: '召开"库房温湿度超标应急会商会"，上海分馆陈馆长分享处置经验',
+		operatorId: 'u2',
+		operatorName: '王馆长',
+		operatorRole: '馆区管理员',
+		timestamp: '2024-06-01 14:00:00',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆'
+	},
+	{
+		id: 'dt6',
+		alertId: 'ea1',
+		taskId: 'rt1',
+		eventType: '开始整改',
+		title: '整改工作开始',
+		description: '张保管开始进行整改工作：临时加放除湿机，联系维修密封胶条',
+		operatorId: 'u3',
+		operatorName: '张保管',
+		operatorRole: '保管员',
+		fromStatus: '待整改',
+		toStatus: '整改中',
+		timestamp: '2024-06-02 09:00:00',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆'
+	}
+];
+
+const mockBatchTasks: BatchTask[] = [
+	{
+		id: 'bt1',
+		title: '主馆展柜季度巡检',
+		description: '对主馆所有展柜的环境监测设备进行季度巡检和校准',
+		type: '批量巡检',
+		priority: '中',
+		status: '进行中',
+		totalCount: 3,
+		completedCount: 1,
+		failedCount: 0,
+		items: [
+			{ id: 'bti1', batchId: 'bt1', targetId: 'ep1', targetName: '主馆一楼A展柜', targetType: '监测点', status: '已完成', assigneeId: 'u3', assigneeName: '张保管', result: '巡检完成，设备运行正常', completedAt: '2024-06-02 10:30:00' },
+			{ id: 'bti2', batchId: 'bt1', targetId: 'ep2', targetName: '主馆二楼B展柜', targetType: '监测点', status: '处理中', assigneeId: 'u3', assigneeName: '张保管' },
+			{ id: 'bti3', batchId: 'bt1', targetId: 'ep3', targetName: '主馆文物库房3号柜', targetType: '监测点', status: '待处理' }
+		],
+		creatorId: 'u2',
+		creatorName: '王馆长',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆',
+		createdAt: '2024-06-01 09:00:00',
+		dispatchedAt: '2024-06-01 09:30:00',
+		updatedAt: '2024-06-02 10:30:00'
+	},
+	{
+		id: 'bt2',
+		title: '高风险告警批量整改通知',
+		description: '对本周所有高风险告警发送批量整改通知',
+		type: '批量通知',
+		priority: '高',
+		status: '已完成',
+		totalCount: 2,
+		completedCount: 2,
+		failedCount: 0,
+		items: [
+			{ id: 'bti4', batchId: 'bt2', targetId: 'ea1', targetName: '温度高风险告警', targetType: '告警', status: '已完成', result: '通知已发送', completedAt: '2024-06-01 10:05:00' },
+			{ id: 'bti5', batchId: 'bt2', targetId: 'ea2', targetName: '湿度中风险告警', targetType: '告警', status: '已完成', result: '通知已发送', completedAt: '2024-06-01 10:05:00' }
+		],
+		creatorId: 'u2',
+		creatorName: '王馆长',
+		museumId: 'm1',
+		museumName: '海事博物馆主馆',
+		createdAt: '2024-06-01 10:00:00',
+		dispatchedAt: '2024-06-01 10:00:00',
+		completedAt: '2024-06-01 10:05:00',
+		updatedAt: '2024-06-01 10:05:00'
+	}
+];
+
+const mockSLARecords: SLARecord[] = [
+	{
+		id: 'sla1',
+		taskId: 'rt1',
+		taskType: '整改任务',
+		riskLevel: '高风险',
+		createdAt: '2024-06-01 11:00:00',
+		dueDate: '2024-06-02',
+		startedAt: '2024-06-02 09:00:00',
+		firstResponseAt: '2024-06-01 11:30:00',
+		slaTargetHours: 24,
+		firstResponseHours: 0.5,
+		isFirstResponseOnTime: true,
+		museumId: 'm1',
+		museumName: '海事博物馆主馆'
+	},
+	{
+		id: 'sla2',
+		taskId: 'rt2',
+		taskType: '整改任务',
+		riskLevel: '低风险',
+		createdAt: '2024-06-03 10:00:00',
+		startedAt: '2024-06-03 14:00:00',
+		completedAt: '2024-06-04 10:00:00',
+		firstResponseAt: '2024-06-03 12:00:00',
+		slaTargetHours: 168,
+		actualHours: 24,
+		firstResponseHours: 2,
+		isOnTime: true,
+		isFirstResponseOnTime: true,
+		museumId: 'm1',
+		museumName: '海事博物馆主馆'
+	},
+	{
+		id: 'sla3',
+		taskId: 'ea1',
+		taskType: '告警响应',
+		riskLevel: '高风险',
+		createdAt: '2024-06-01 10:00:00',
+		firstResponseAt: '2024-06-01 10:25:00',
+		slaTargetHours: 1,
+		firstResponseHours: 0.42,
+		isFirstResponseOnTime: true,
+		museumId: 'm1',
+		museumName: '海事博物馆主馆'
+	},
+	{
+		id: 'sla4',
+		taskId: 'ro1',
+		taskType: '修复工单',
+		riskLevel: '中风险',
+		createdAt: '2024-05-08 10:00:00',
+		startedAt: '2024-05-10 09:00:00',
+		slaTargetHours: 96,
+		firstResponseHours: 47,
+		isFirstResponseOnTime: true,
+		museumId: 'm1',
+		museumName: '海事博物馆主馆'
+	}
+];
+
 const stored = loadFromStorage();
 
 export const museums = writable<Museum[]>(stored?.museums || mockMuseums);
@@ -907,6 +1325,13 @@ export const envThresholdConfigs = writable<EnvThresholdConfig[]>(stored?.envThr
 export const envAlerts = writable<EnvAlert[]>(stored?.envAlerts || mockEnvAlerts);
 export const envRiskAssessments = writable<EnvRiskAssessment[]>(stored?.envRiskAssessments || mockEnvRiskAssessments);
 export const rectificationTasks = writable<RectificationTask[]>(stored?.rectificationTasks || mockRectificationTasks);
+export const alertRules = writable<AlertRule[]>(stored?.alertRules || mockAlertRules);
+export const notifications = writable<Notification[]>(stored?.notifications || mockNotifications);
+export const emergencyMeetings = writable<EmergencyMeeting[]>(stored?.emergencyMeetings || mockEmergencyMeetings);
+export const emergencyPlans = writable<EmergencyPlan[]>(stored?.emergencyPlans || mockEmergencyPlans);
+export const disposalTimelineEvents = writable<DisposalTimelineEvent[]>(stored?.disposalTimelineEvents || mockDisposalTimelineEvents);
+export const batchTasks = writable<BatchTask[]>(stored?.batchTasks || mockBatchTasks);
+export const slaRecords = writable<SLARecord[]>(stored?.slaRecords || mockSLARecords);
 
 export const currentUserId = writable<string>(stored?.currentUserId || 'u2');
 export const currentMuseumId = writable<string>(stored?.currentMuseumId || 'm1');
@@ -1028,6 +1453,13 @@ function persistAll() {
 		envAlerts: get(envAlerts),
 		envRiskAssessments: get(envRiskAssessments),
 		rectificationTasks: get(rectificationTasks),
+		alertRules: get(alertRules),
+		notifications: get(notifications),
+		emergencyMeetings: get(emergencyMeetings),
+		emergencyPlans: get(emergencyPlans),
+		disposalTimelineEvents: get(disposalTimelineEvents),
+		batchTasks: get(batchTasks),
+		slaRecords: get(slaRecords),
 		currentUserId: get(currentUserId),
 		currentMuseumId: get(currentMuseumId)
 	});
@@ -1248,6 +1680,11 @@ export function changeExhibitionStatus(
 	operator: string,
 	remark: string
 ) {
+	const riskValidation = validateExhibitionStatusChangeWithRisk(beaconLightId, toStatus);
+	if (!riskValidation.valid) {
+		return { success: false, errors: riskValidation.errors };
+	}
+
 	let fromStatus: ExhibitionStatus = '库房存储';
 	beaconLights.update((lights) =>
 		lights.map((l) => {
@@ -1278,6 +1715,7 @@ export function changeExhibitionStatus(
 		detail: `展陈状态变更：${fromStatus} → ${toStatus}`
 	});
 	persistAll();
+	return { success: true, errors: [] };
 }
 
 export function createBorrowRequest(data: Omit<BorrowRequest, 'id' | 'status' | 'approvalHistory' | 'createdAt' | 'updatedAt' | 'beaconLightName' | 'beaconLightCode' | 'sourceMuseumName' | 'targetMuseumName' | 'applicantName'>) {
@@ -1286,7 +1724,13 @@ export function createBorrowRequest(data: Omit<BorrowRequest, 'id' | 'status' | 
 	const targetMuseum = get(museums).find(m => m.id === data.targetMuseumId);
 	const user = get(currentUser);
 
-	if (!light || !sourceMuseum || !targetMuseum || !user) return null;
+	if (!light || !sourceMuseum || !targetMuseum || !user) {
+		return { success: false, errors: ['参数不完整'], request: null };
+	}
+
+	if (isBeaconLightHighRisk(data.beaconLightId)) {
+		return { success: false, errors: ['高风险藏品不能发起借展申请'], request: null };
+	}
 
 	const approvalRecord: ApprovalRecord = {
 		id: generateId(),
@@ -1322,7 +1766,7 @@ export function createBorrowRequest(data: Omit<BorrowRequest, 'id' | 'status' | 
 		detail: `从${sourceMuseum.name}借展至${targetMuseum.name}，用途：${data.purpose}`
 	});
 	persistAll();
-	return request;
+	return { success: true, errors: [], request };
 }
 
 export function approveBorrowRequest(requestId: string, action: '通过' | '拒绝', comment: string) {
@@ -2146,8 +2590,8 @@ export function createRectificationTask(data: {
 
 	rectificationTasks.update(tasks => [task, ...tasks]);
 	addOperationLog({
-		action: '创建修复工单',
-		targetType: '修复工单',
+		action: '创建整改任务',
+		targetType: '整改任务',
 		targetId: task.id,
 		targetName: task.title,
 		detail: `创建整改任务：${task.title}，风险等级：${task.riskLevel}`
@@ -2174,8 +2618,8 @@ export function startRectificationTask(taskId: string) {
 	);
 
 	addOperationLog({
-		action: '开始修复',
-		targetType: '修复工单',
+		action: '开始整改',
+		targetType: '整改任务',
 		targetId: taskId,
 		targetName: task.title,
 		detail: `开始整改任务：${task.title}`
@@ -2207,8 +2651,8 @@ export function completeRectificationTask(taskId: string, result: string) {
 	);
 
 	addOperationLog({
-		action: '完成修复',
-		targetType: '修复工单',
+		action: '完成整改',
+		targetType: '整改任务',
 		targetId: taskId,
 		targetName: task.title,
 		detail: `完成整改任务：${task.title}，整改结果：${result}`
@@ -2233,8 +2677,8 @@ export function acceptRectificationTask(taskId: string, result: string) {
 	);
 
 	addOperationLog({
-		action: '验收修复',
-		targetType: '修复工单',
+		action: '验收整改',
+		targetType: '整改任务',
 		targetId: taskId,
 		targetName: task.title,
 		detail: `验收整改任务：${task.title}，验收结果：${result}`
@@ -2265,8 +2709,8 @@ export function cancelRectificationTask(taskId: string, reason: string) {
 	);
 
 	addOperationLog({
-		action: '删除',
-		targetType: '修复工单',
+		action: '取消整改任务',
+		targetType: '整改任务',
 		targetId: taskId,
 		targetName: task.title,
 		detail: `取消整改任务：${task.title}，原因：${reason}`
@@ -2291,8 +2735,8 @@ export function assignRectificationTask(taskId: string, assigneeId: string) {
 	);
 
 	addOperationLog({
-		action: '分配修复',
-		targetType: '修复工单',
+		action: '编辑',
+		targetType: '整改任务',
 		targetId: taskId,
 		targetName: task.title,
 		detail: `分配整改任务给：${assignee.fullName}`
@@ -2321,3 +2765,984 @@ export function validateExhibitionStatusChangeWithRisk(
 
 	return { valid: errors.length === 0, errors };
 }
+
+export function addDisposalTimelineEvent(params: {
+	alertId?: string;
+	taskId?: string;
+	beaconLightId?: string;
+	eventType: DisposalTimelineEventType;
+	title: string;
+	description: string;
+	escalationLevel?: AlertEscalationLevel;
+	fromStatus?: string;
+	toStatus?: string;
+	museumId?: string;
+	museumName?: string;
+}) {
+	const user = get(currentUser);
+	const museum = get(currentMuseum);
+
+	const event: DisposalTimelineEvent = {
+		id: generateId(),
+		alertId: params.alertId,
+		taskId: params.taskId,
+		beaconLightId: params.beaconLightId,
+		eventType: params.eventType,
+		title: params.title,
+		description: params.description,
+		operatorId: user?.id,
+		operatorName: user?.fullName || '系统',
+		operatorRole: user?.role || '系统',
+		escalationLevel: params.escalationLevel,
+		fromStatus: params.fromStatus,
+		toStatus: params.toStatus,
+		timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+		museumId: params.museumId || museum?.id,
+		museumName: params.museumName || museum?.name
+	};
+
+	disposalTimelineEvents.update(events => [event, ...events]);
+	persistAll();
+	return event;
+}
+
+export function createAlertRule(data: Omit<AlertRule, 'id' | 'createdAt' | 'updatedAt' | 'createdBy'> & { createdBy?: string }) {
+	const user = get(currentUser);
+	const museum = get(currentMuseum);
+	const today = getToday();
+
+	const rule: AlertRule = {
+		...data,
+		id: generateId(),
+		createdBy: data.createdBy || user?.fullName || '系统',
+		museumId: data.museumId || museum?.id,
+		museumName: data.museumName || museum?.name,
+		createdAt: today,
+		updatedAt: today
+	};
+
+	const validation = validateAlertRule(rule);
+	if (!validation.valid) {
+		return { success: false, errors: validation.errors, rule: null };
+	}
+
+	alertRules.update(rules => [...rules, rule]);
+	addOperationLog({
+		action: '创建',
+		targetType: '航标灯',
+		targetId: rule.id,
+		targetName: rule.name,
+		detail: `创建预警规则：${rule.name}，类型：${rule.type}，风险等级：${rule.riskLevel}`
+	});
+	persistAll();
+	return { success: true, errors: [], rule };
+}
+
+export function updateAlertRule(id: string, updates: Partial<AlertRule>) {
+	const existing = get(alertRules).find(r => r.id === id);
+	if (!existing) return { success: false, errors: ['规则不存在'] };
+
+	const combined = { ...existing, ...updates };
+	const validation = validateAlertRule(combined);
+	if (!validation.valid) {
+		return { success: false, errors: validation.errors };
+	}
+
+	alertRules.update(rules =>
+		rules.map(r => r.id === id ? { ...r, ...updates, updatedAt: getToday() } : r)
+	);
+	addOperationLog({
+		action: '编辑',
+		targetType: '航标灯',
+		targetId: id,
+		targetName: updates.name || existing.name,
+		detail: `编辑预警规则：${existing.name}`
+	});
+	persistAll();
+	return { success: true, errors: [] };
+}
+
+export function deleteAlertRule(id: string) {
+	const rule = get(alertRules).find(r => r.id === id);
+	alertRules.update(rules => rules.filter(r => r.id !== id));
+
+	if (rule) {
+		addOperationLog({
+			action: '删除',
+			targetType: '航标灯',
+			targetId: id,
+			targetName: rule.name,
+			detail: `删除预警规则：${rule.name}`
+		});
+	}
+	persistAll();
+}
+
+export function toggleAlertRule(id: string, enabled: boolean) {
+	alertRules.update(rules =>
+		rules.map(r => r.id === id ? { ...r, enabled, updatedAt: getToday() } : r)
+	);
+	const rule = get(alertRules).find(r => r.id === id);
+	if (rule) {
+		addOperationLog({
+			action: '编辑',
+			targetType: '航标灯',
+			targetId: id,
+			targetName: rule.name,
+			detail: `${enabled ? '启用' : '停用'}预警规则：${rule.name}`
+		});
+	}
+	persistAll();
+}
+
+export function sendNotification(params: {
+	userId: string;
+	userName?: string;
+	channel: Notification['channel'];
+	type: Notification['type'];
+	title: string;
+	content: string;
+	alertId?: string;
+	taskId?: string;
+	meetingId?: string;
+	museumId?: string;
+	museumName?: string;
+}) {
+	const museum = get(currentMuseum);
+
+	const notification: Notification = {
+		id: generateId(),
+		userId: params.userId,
+		userName: params.userName,
+		channel: params.channel,
+		type: params.type,
+		title: params.title,
+		content: params.content,
+		alertId: params.alertId,
+		taskId: params.taskId,
+		meetingId: params.meetingId,
+		status: '未读',
+		createdAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
+		museumId: params.museumId || museum?.id,
+		museumName: params.museumName || museum?.name
+	};
+
+	notifications.update(notifs => [notification, ...notifs]);
+	persistAll();
+	return notification;
+}
+
+export function sendNotificationToRoles(params: {
+	roles: UserRole[];
+	channel: Notification['channel'];
+	type: Notification['type'];
+	title: string;
+	content: string;
+	alertId?: string;
+	taskId?: string;
+	meetingId?: string;
+	museumId?: string;
+}) {
+	const userList = get(users);
+	const museum = get(currentMuseum);
+	const targetUsers = userList.filter(u => params.roles.includes(u.role) && (!params.museumId || u.museumId === params.museumId));
+
+	const sentNotifications: Notification[] = [];
+	targetUsers.forEach(user => {
+		const notif = sendNotification({
+			userId: user.id,
+			userName: user.fullName,
+			channel: params.channel,
+			type: params.type,
+			title: params.title,
+			content: params.content,
+			alertId: params.alertId,
+			taskId: params.taskId,
+			meetingId: params.meetingId,
+			museumId: params.museumId || museum?.id,
+			museumName: user.museumId === museum?.id ? museum?.name : undefined
+		});
+		sentNotifications.push(notif);
+	});
+
+	return sentNotifications;
+}
+
+export function markNotificationRead(notificationId: string) {
+	notifications.update(notifs =>
+		notifs.map(n => n.id === notificationId ? {
+			...n,
+			status: '已读',
+			readAt: new Date().toISOString().replace('T', ' ').slice(0, 19)
+		} : n)
+	);
+	persistAll();
+}
+
+export function markAllNotificationsRead(userId: string) {
+	notifications.update(notifs =>
+		notifs.map(n => n.userId === userId && n.status === '未读' ? {
+			...n,
+			status: '已读',
+			readAt: new Date().toISOString().replace('T', ' ').slice(0, 19)
+		} : n)
+	);
+	persistAll();
+}
+
+export const unreadNotificationCount = derived(
+	[notifications, currentUserId],
+	([$notifs, $userId]) => $notifs.filter(n => n.userId === $userId && n.status === '未读').length
+);
+
+export function escalateAlert(alertId: string, level: AlertEscalationLevel) {
+	const alert = get(envAlerts).find(a => a.id === alertId);
+	if (!alert) return { success: false, errors: ['告警不存在'] };
+
+	const rule = get(alertRules).find(r => r.enabled && r.escalationEnabled);
+	if (!rule) return { success: false, errors: ['未找到启用的升级规则'] };
+
+	const escalationRule = rule.escalationRules.find(er => er.level === level);
+	if (!escalationRule) return { success: false, errors: ['未找到对应等级的升级规则'] };
+
+	if (escalationRule.notifyRoles.length > 0) {
+		sendNotificationToRoles({
+			roles: escalationRule.notifyRoles,
+			channel: '站内',
+			type: '升级通知',
+			title: `【告警升级${level}级】${alert.pointName}${alert.alertType}告警`,
+			content: `${alert.pointName}的${alert.alertType}告警超过${escalationRule.timeoutMinutes}分钟未响应，已自动升级至${level}级，请及时处理。\n告警详情：${alert.description}`,
+			alertId: alert.id,
+			museumId: alert.museumId
+		});
+	}
+
+	addDisposalTimelineEvent({
+		alertId: alert.id,
+		eventType: '告警升级',
+		title: `告警自动升级至${level}级`,
+		description: `告警超过${escalationRule.timeoutMinutes}分钟未响应，已自动升级至${level}级`,
+		escalationLevel: level,
+		museumId: alert.museumId,
+		museumName: alert.museumName
+	});
+
+	addOperationLog({
+		action: '编辑',
+		targetType: '航标灯',
+		targetId: alertId,
+		targetName: alert.pointName,
+		detail: `告警升级至${level}级：${alert.alertType}${alert.alertLevel}`
+	});
+
+	persistAll();
+	return { success: true, errors: [] };
+}
+
+export function checkAndEscalateAlerts() {
+	const pendingAlerts = get(envAlerts).filter(a => a.status === '待处理' || a.status === '处理中');
+	const rules = get(alertRules).filter(r => r.enabled && r.escalationEnabled);
+
+	let escalatedCount = 0;
+
+	pendingAlerts.forEach(alert => {
+		const ageMinutes = calculateAlertAgeMinutes(alert.createdAt);
+
+		rules.forEach(rule => {
+			rule.escalationRules.forEach(escalationRule => {
+				if (ageMinutes >= escalationRule.timeoutMinutes) {
+					const existingEvents = get(disposalTimelineEvents).filter(
+						e => e.alertId === alert.id && e.eventType === '告警升级' && e.escalationLevel === escalationRule.level
+					);
+					if (existingEvents.length === 0) {
+						escalateAlert(alert.id, escalationRule.level);
+						escalatedCount++;
+					}
+				}
+			});
+		});
+	});
+
+	return escalatedCount;
+}
+
+export function createEmergencyMeeting(data: {
+	title: string;
+	description?: string;
+	alertId?: string;
+	riskLevel: RiskLevel;
+	priority: EmergencyMeeting['priority'];
+	scheduledAt: string;
+	participantUserIds: string[];
+}) {
+	const user = get(currentUser);
+	const museum = get(currentMuseum);
+	if (!user || !museum) return { success: false, errors: ['用户信息不完整'], meeting: null };
+
+	const userList = get(users);
+	const participants = data.participantUserIds.map(userId => {
+		const u = userList.find(x => x.id === userId);
+		return {
+			userId,
+			userName: u?.fullName || '',
+			userRole: u?.role || '保管员',
+			museumId: u?.museumId || '',
+			museumName: u?.museumId === museum.id ? museum.name : (get(museums).find(m => m.id === u?.museumId)?.name || ''),
+			status: '邀请中' as const
+		};
+	});
+
+	const meeting: EmergencyMeeting = {
+		id: generateId(),
+		title: data.title,
+		description: data.description,
+		alertId: data.alertId,
+		riskLevel: data.riskLevel,
+		priority: data.priority,
+		status: '筹备中',
+		initiatorId: user.id,
+		initiatorName: user.fullName,
+		museumId: museum.id,
+		museumName: museum.name,
+		participants,
+		messages: [],
+		scheduledAt: data.scheduledAt,
+		createdAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
+		updatedAt: new Date().toISOString().replace('T', ' ').slice(0, 19)
+	};
+
+	const validation = validateEmergencyMeeting(meeting);
+	if (!validation.valid) {
+		return { success: false, errors: validation.errors, meeting: null };
+	}
+
+	emergencyMeetings.update(meetings => [meeting, ...meetings]);
+
+	data.participantUserIds.forEach(userId => {
+		sendNotification({
+			userId,
+			channel: '站内',
+			type: '系统通知',
+			title: `【应急会商邀请】${data.title}`,
+			content: `${user.fullName}邀请您参加应急会商会：${data.title}\n时间：${data.scheduledAt}\n请及时确认参加。`,
+			meetingId: meeting.id,
+			museumId: museum.id,
+			museumName: museum.name
+		});
+	});
+
+	if (data.alertId) {
+		addDisposalTimelineEvent({
+			alertId: data.alertId,
+			eventType: '应急会商',
+			title: `召开应急会商：${data.title}`,
+			description: `${user.fullName}发起应急会商，共${data.participantUserIds.length}人受邀参加`,
+			museumId: museum.id,
+			museumName: museum.name
+		});
+	}
+
+	addOperationLog({
+		action: '创建',
+		targetType: '航标灯',
+		targetId: meeting.id,
+		targetName: meeting.title,
+		detail: `创建应急会商：${data.title}，优先级：${data.priority}`
+	});
+
+	persistAll();
+	return { success: true, errors: [], meeting };
+}
+
+export function startEmergencyMeeting(meetingId: string) {
+	emergencyMeetings.update(meetings =>
+		meetings.map(m => m.id === meetingId ? {
+			...m,
+			status: '进行中',
+			startedAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
+			updatedAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
+			participants: m.participants.map(p => ({ ...p, status: p.status === '已确认' ? '已出席' : p.status }))
+		} : m)
+	);
+
+	const meeting = get(emergencyMeetings).find(m => m.id === meetingId);
+	if (meeting) {
+		addOperationLog({
+			action: '编辑',
+			targetType: '航标灯',
+			targetId: meetingId,
+			targetName: meeting.title,
+			detail: `开始应急会商：${meeting.title}`
+		});
+	}
+	persistAll();
+}
+
+export function endEmergencyMeeting(meetingId: string, conclusion: string, actionItems: string[]) {
+	emergencyMeetings.update(meetings =>
+		meetings.map(m => m.id === meetingId ? {
+			...m,
+			status: '已结束',
+			endedAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
+			conclusion,
+			actionItems,
+			updatedAt: new Date().toISOString().replace('T', ' ').slice(0, 19)
+		} : m)
+	);
+
+	const meeting = get(emergencyMeetings).find(m => m.id === meetingId);
+	if (meeting) {
+		addOperationLog({
+			action: '编辑',
+			targetType: '航标灯',
+			targetId: meetingId,
+			targetName: meeting.title,
+			detail: `结束应急会商：${meeting.title}，结论：${conclusion}`
+		});
+	}
+	persistAll();
+}
+
+export function addMeetingMessage(meetingId: string, content: string) {
+	const user = get(currentUser);
+	if (!user) return null;
+
+	const message: EmergencyMeeting['messages'][0] = {
+		id: generateId(),
+		meetingId,
+		userId: user.id,
+		userName: user.fullName,
+		userRole: user.role,
+		content,
+		timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19)
+	};
+
+	emergencyMeetings.update(meetings =>
+		meetings.map(m => m.id === meetingId ? {
+			...m,
+			messages: [...m.messages, message],
+			updatedAt: new Date().toISOString().replace('T', ' ').slice(0, 19)
+		} : m)
+	);
+
+	persistAll();
+	return message;
+}
+
+export function confirmMeetingParticipation(meetingId: string, userId: string, accept: boolean) {
+	emergencyMeetings.update(meetings =>
+		meetings.map(m => m.id === meetingId ? {
+			...m,
+			participants: m.participants.map(p =>
+				p.userId === userId ? { ...p, status: accept ? '已确认' : '已拒绝' } : p
+			),
+			updatedAt: new Date().toISOString().replace('T', ' ').slice(0, 19)
+		} : m)
+	);
+	persistAll();
+}
+
+export function createEmergencyPlan(data: Omit<EmergencyPlan, 'id' | 'createdAt' | 'updatedAt' | 'createdBy' | 'publishedAt'> & { createdBy?: string }) {
+	const user = get(currentUser);
+	const today = getToday();
+
+	const plan: EmergencyPlan = {
+		...data,
+		id: generateId(),
+		createdBy: data.createdBy || user?.fullName || '系统',
+		createdAt: today,
+		updatedAt: today
+	};
+
+	const validation = validateEmergencyPlan(plan);
+	if (!validation.valid) {
+		return { success: false, errors: validation.errors, plan: null };
+	}
+
+	emergencyPlans.update(plans => [...plans, plan]);
+	addOperationLog({
+		action: '创建',
+		targetType: '航标灯',
+		targetId: plan.id,
+		targetName: plan.name,
+		detail: `创建应急预案：${plan.name}，分类：${plan.category}，版本：${plan.version}`
+	});
+	persistAll();
+	return { success: true, errors: [], plan };
+}
+
+export function updateEmergencyPlan(id: string, updates: Partial<EmergencyPlan>) {
+	const existing = get(emergencyPlans).find(p => p.id === id);
+	if (!existing) return { success: false, errors: ['预案不存在'] };
+
+	const combined = { ...existing, ...updates };
+	const validation = validateEmergencyPlan(combined);
+	if (!validation.valid) {
+		return { success: false, errors: validation.errors };
+	}
+
+	emergencyPlans.update(plans =>
+		plans.map(p => p.id === id ? { ...p, ...updates, updatedAt: getToday() } : p)
+	);
+	addOperationLog({
+		action: '编辑',
+		targetType: '航标灯',
+		targetId: id,
+		targetName: updates.name || existing.name,
+		detail: `编辑应急预案：${existing.name}`
+	});
+	persistAll();
+	return { success: true, errors: [] };
+}
+
+export function publishEmergencyPlan(id: string) {
+	emergencyPlans.update(plans =>
+		plans.map(p => p.id === id ? {
+			...p,
+			status: '已发布',
+			publishedAt: getToday(),
+			updatedAt: getToday()
+		} : p)
+	);
+	const plan = get(emergencyPlans).find(p => p.id === id);
+	if (plan) {
+		addOperationLog({
+			action: '编辑',
+			targetType: '航标灯',
+			targetId: id,
+			targetName: plan.name,
+			detail: `发布应急预案：${plan.name}`
+		});
+	}
+	persistAll();
+}
+
+export function archiveEmergencyPlan(id: string) {
+	emergencyPlans.update(plans =>
+		plans.map(p => p.id === id ? { ...p, status: '已归档', updatedAt: getToday() } : p)
+	);
+	const plan = get(emergencyPlans).find(p => p.id === id);
+	if (plan) {
+		addOperationLog({
+			action: '编辑',
+			targetType: '航标灯',
+			targetId: id,
+			targetName: plan.name,
+			detail: `归档应急预案：${plan.name}`
+		});
+	}
+	persistAll();
+}
+
+export function deleteEmergencyPlan(id: string) {
+	const plan = get(emergencyPlans).find(p => p.id === id);
+	emergencyPlans.update(plans => plans.filter(p => p.id !== id));
+
+	if (plan) {
+		addOperationLog({
+			action: '删除',
+			targetType: '航标灯',
+			targetId: id,
+			targetName: plan.name,
+			detail: `删除应急预案：${plan.name}`
+		});
+	}
+	persistAll();
+}
+
+export function createBatchTask(data: {
+	title: string;
+	description?: string;
+	type: BatchTask['type'];
+	priority: BatchTask['priority'];
+	items: { targetId: string; targetName: string; targetType: BatchTaskItem['targetType'] }[];
+}) {
+	const user = get(currentUser);
+	const museum = get(currentMuseum);
+	if (!user || !museum) return { success: false, errors: ['用户信息不完整'], task: null };
+
+	const today = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+	const taskItems: BatchTaskItem[] = data.items.map((item, idx) => ({
+		id: generateId(),
+		batchId: '',
+		targetId: item.targetId,
+		targetName: item.targetName,
+		targetType: item.targetType,
+		status: '待处理'
+	}));
+
+	const task: BatchTask = {
+		id: generateId(),
+		title: data.title,
+		description: data.description,
+		type: data.type,
+		priority: data.priority,
+		status: '待派发',
+		totalCount: data.items.length,
+		completedCount: 0,
+		failedCount: 0,
+		items: taskItems.map(item => ({ ...item, batchId: '' })),
+		creatorId: user.id,
+		creatorName: user.fullName,
+		museumId: museum.id,
+		museumName: museum.name,
+		createdAt: today,
+		updatedAt: today
+	};
+
+	task.items = taskItems.map(item => ({ ...item, batchId: task.id }));
+
+	const validation = validateBatchTask(task);
+	if (!validation.valid) {
+		return { success: false, errors: validation.errors, task: null };
+	}
+
+	batchTasks.update(tasks => [task, ...tasks]);
+
+	addDisposalTimelineEvent({
+		eventType: '任务派发',
+		title: `创建批量任务：${data.title}`,
+		description: `共${data.items.length}项任务待派发`,
+		museumId: museum.id,
+		museumName: museum.name
+	});
+
+	addOperationLog({
+		action: '创建',
+		targetType: '航标灯',
+		targetId: task.id,
+		targetName: task.title,
+		detail: `创建批量任务：${data.title}，类型：${data.type}，共${data.items.length}项`
+	});
+
+	persistAll();
+	return { success: true, errors: [], task };
+}
+
+export function dispatchBatchTask(taskId: string) {
+	batchTasks.update(tasks =>
+		tasks.map(t => t.id === taskId ? {
+			...t,
+			status: '进行中',
+			dispatchedAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
+			updatedAt: new Date().toISOString().replace('T', ' ').slice(0, 19)
+		} : t)
+	);
+
+	const task = get(batchTasks).find(t => t.id === taskId);
+	if (task) {
+		addOperationLog({
+			action: '编辑',
+			targetType: '航标灯',
+			targetId: taskId,
+			targetName: task.title,
+			detail: `派发批量任务：${task.title}`
+		});
+	}
+	persistAll();
+}
+
+export function updateBatchTaskItem(itemId: string, status: BatchTaskItem['status'], result?: string, errorMessage?: string) {
+	const task = get(batchTasks).find(t => t.items.some(i => i.id === itemId));
+	if (!task) return false;
+
+	let completedCount = 0;
+	let failedCount = 0;
+
+	batchTasks.update(tasks =>
+		tasks.map(t => {
+			if (t.id !== task.id) return t;
+
+			const updatedItems = t.items.map(item => {
+				if (item.id === itemId) {
+					return {
+						...item,
+						status,
+						result,
+						errorMessage,
+						completedAt: (status === '已完成' || status === '失败') ? new Date().toISOString().replace('T', ' ').slice(0, 19) : undefined
+					};
+				}
+				return item;
+			});
+
+			completedCount = updatedItems.filter(i => i.status === '已完成').length;
+			failedCount = updatedItems.filter(i => i.status === '失败').length;
+
+			const allDone = completedCount + failedCount === t.totalCount;
+
+			return {
+				...t,
+				items: updatedItems,
+				completedCount,
+				failedCount,
+				status: allDone ? '已完成' : t.status,
+				completedAt: allDone ? new Date().toISOString().replace('T', ' ').slice(0, 19) : undefined,
+				updatedAt: new Date().toISOString().replace('T', ' ').slice(0, 19)
+			};
+		})
+	);
+
+	persistAll();
+	return true;
+}
+
+export function createSLARecord(params: {
+	taskId: string;
+	taskType: SLARecord['taskType'];
+	riskLevel: RiskLevel;
+	createdAt: string;
+	dueDate?: string;
+	museumId?: string;
+	museumName?: string;
+}) {
+	const slaTargetHours = calculateSLATargetHours(params.riskLevel, params.taskType);
+
+	const record: SLARecord = {
+		id: generateId(),
+		taskId: params.taskId,
+		taskType: params.taskType,
+		riskLevel: params.riskLevel,
+		createdAt: params.createdAt,
+		dueDate: params.dueDate,
+		slaTargetHours,
+		isOnTime: true,
+		isFirstResponseOnTime: true,
+		museumId: params.museumId,
+		museumName: params.museumName
+	};
+
+	slaRecords.update(records => [...records, record]);
+	persistAll();
+	return record;
+}
+
+export function updateSLARecordFirstResponse(taskId: string, firstResponseAt: string) {
+	const record = get(slaRecords).find(r => r.taskId === taskId);
+	if (!record) return false;
+
+	const created = new Date(record.createdAt).getTime();
+	const response = new Date(firstResponseAt).getTime();
+	const firstResponseHours = (response - created) / (1000 * 60 * 60);
+
+	slaRecords.update(records =>
+		records.map(r => r.taskId === taskId ? {
+			...r,
+			firstResponseAt,
+			firstResponseHours: Math.round(firstResponseHours * 100) / 100,
+			isFirstResponseOnTime: firstResponseHours <= r.slaTargetHours
+		} : r)
+	);
+
+	persistAll();
+	return true;
+}
+
+export function updateSLARecordCompletion(taskId: string, completedAt: string) {
+	const record = get(slaRecords).find(r => r.taskId === taskId);
+	if (!record) return false;
+
+	const created = new Date(record.createdAt).getTime();
+	const completed = new Date(completedAt).getTime();
+	const actualHours = (completed - created) / (1000 * 60 * 60);
+
+	slaRecords.update(records =>
+		records.map(r => r.taskId === taskId ? {
+			...r,
+			completedAt,
+			actualHours: Math.round(actualHours * 100) / 100,
+			isOnTime: actualHours <= r.slaTargetHours
+		} : r)
+	);
+
+	persistAll();
+	return true;
+}
+
+export function calculateSLAStats(records: SLARecord[]) {
+	const total = records.length;
+	const onTime = records.filter(r => r.isOnTime).length;
+	const firstResponseOnTime = records.filter(r => r.isFirstResponseOnTime).length;
+	const avgHours = records.filter(r => r.actualHours).reduce((sum, r) => sum + (r.actualHours || 0), 0) / (records.filter(r => r.actualHours).length || 1);
+
+	return {
+		total,
+		onTime,
+		onTimeRate: total > 0 ? Math.round((onTime / total) * 100) : 0,
+		firstResponseOnTime,
+		firstResponseOnTimeRate: total > 0 ? Math.round((firstResponseOnTime / total) * 100) : 0,
+		avgHours: Math.round(avgHours * 10) / 10
+	};
+}
+
+export function calculateAlertClosureStats(alerts: EnvAlert[], timeRange?: { start: string; end: string }): AlertClosureStats {
+	let filteredAlerts = alerts;
+	if (timeRange) {
+		filteredAlerts = alerts.filter(a => a.createdAt >= timeRange.start && a.createdAt <= timeRange.end);
+	}
+
+	const closedAlerts = filteredAlerts.filter(a => a.status === '已确认' || a.status === '已忽略');
+	const totalAlerts = filteredAlerts.length;
+	const closureRate = totalAlerts > 0 ? Math.round((closedAlerts.length / totalAlerts) * 100) / 10 : 0;
+
+	const closedWithTimes = closedAlerts.filter(a => a.confirmedAt);
+	const avgClosureHours = closedWithTimes.length > 0
+		? closedWithTimes.reduce((sum, a) => {
+			const created = new Date(a.createdAt).getTime();
+			const confirmed = new Date(a.confirmedAt!).getTime();
+			return sum + (confirmed - created) / (1000 * 60 * 60);
+		}, 0) / closedWithTimes.length
+		: 0;
+
+	const riskLevelStats = (['高风险', '中风险', '低风险'] as RiskLevel[]).map(level => {
+		const levelAlerts = filteredAlerts.filter(a => a.alertLevel === level);
+		const levelClosed = levelAlerts.filter(a => a.status === '已确认' || a.status === '已忽略');
+		return {
+			level,
+			total: levelAlerts.length,
+			closed: levelClosed.length,
+			closureRate: levelAlerts.length > 0 ? Math.round((levelClosed.length / levelAlerts.length) * 100) / 10 : 0,
+			avgHours: 0
+		};
+	});
+
+	const typeStats = (['温度', '湿度', '照度', '震动', '盐雾'] as EnvMonitorDataType[]).map(type => {
+		const typeAlerts = filteredAlerts.filter(a => a.alertType === type);
+		const typeClosed = typeAlerts.filter(a => a.status === '已确认' || a.status === '已忽略');
+		return {
+			type,
+			total: typeAlerts.length,
+			closed: typeClosed.length,
+			closureRate: typeAlerts.length > 0 ? Math.round((typeClosed.length / typeAlerts.length) * 100) / 10 : 0
+		};
+	});
+
+	const museumList = [...new Set(filteredAlerts.map(a => a.museumId))];
+	const museumStats = museumList.map(mid => {
+		const museumAlerts = filteredAlerts.filter(a => a.museumId === mid);
+		const museumClosed = museumAlerts.filter(a => a.status === '已确认' || a.status === '已忽略');
+		return {
+			museumId: mid,
+			museumName: museumAlerts[0]?.museumName || '',
+			total: museumAlerts.length,
+			closed: museumClosed.length,
+			closureRate: museumAlerts.length > 0 ? Math.round((museumClosed.length / museumAlerts.length) * 100) / 10 : 0
+		};
+	});
+
+	return {
+		totalAlerts,
+		closedAlerts: closedAlerts.length,
+		closureRate,
+		avgClosureHours: Math.round(avgClosureHours * 10) / 10,
+		autoClosed: 0,
+		manualClosed: closedAlerts.length,
+		byRiskLevel: riskLevelStats,
+		byType: typeStats,
+		byMuseum: museumStats,
+		timeRange: timeRange || { start: '', end: '' }
+	};
+}
+
+export function calculateRiskHeatmapData(): RiskHeatmapData[] {
+	const points = get(envMonitorPoints);
+	const alerts = get(envAlerts);
+	const lights = get(beaconLights);
+
+	return points.map(point => {
+		const pointAlerts = alerts.filter(a => a.pointId === point.id && a.status !== '已忽略');
+		const highRiskCount = pointAlerts.filter(a => a.alertLevel === '高风险').length;
+		const mediumRiskCount = pointAlerts.filter(a => a.alertLevel === '中风险').length;
+		const lowRiskCount = pointAlerts.filter(a => a.alertLevel === '低风险').length;
+
+		const riskScore = calculateRiskScore(highRiskCount, mediumRiskCount, lowRiskCount);
+		const overallRisk = calculateOverallRiskLevel(pointAlerts.map(a => ({ level: a.alertLevel })));
+
+		const pointLights = lights.filter(l => point.beaconLightIds.includes(l.id));
+
+		return {
+			museumId: point.museumId,
+			museumName: point.museumName,
+			location: point.location,
+			locationType: point.type,
+			pointId: point.id,
+			pointName: point.name,
+			riskLevel: overallRisk,
+			riskScore,
+			alertCount: pointAlerts.length,
+			highRiskCount,
+			mediumRiskCount,
+			lowRiskCount,
+			beaconLightCount: pointLights.length,
+			beaconLightNames: pointLights.map(l => l.name),
+			lastUpdated: new Date().toISOString().replace('T', ' ').slice(0, 19)
+		};
+	});
+}
+
+export function exportDisposalTimeline(alertId?: string, format: 'CSV' | 'Excel' | 'PDF' = 'CSV'): string {
+	let events = get(disposalTimelineEvents);
+	if (alertId) {
+		events = events.filter(e => e.alertId === alertId);
+	}
+
+	const data = events.map(e => ({
+		时间: e.timestamp,
+		事件类型: e.eventType,
+		标题: e.title,
+		描述: e.description,
+		操作人: e.operatorName,
+		角色: e.operatorRole,
+		升级等级: e.escalationLevel || '',
+		原状态: e.fromStatus || '',
+		新状态: e.toStatus || '',
+		馆区: e.museumName || ''
+	}));
+
+	const columns = [
+		{ key: '时间', label: '时间' },
+		{ key: '事件类型', label: '事件类型' },
+		{ key: '标题', label: '标题' },
+		{ key: '描述', label: '描述' },
+		{ key: '操作人', label: '操作人' },
+		{ key: '角色', label: '角色' },
+		{ key: '升级等级', label: '升级等级' },
+		{ key: '原状态', label: '原状态' },
+		{ key: '新状态', label: '新状态' },
+		{ key: '馆区', label: '馆区' }
+	];
+
+	const csv = exportCSVUtil(data, columns);
+
+	addOperationLog({
+		action: '导出数据',
+		targetType: '航标灯',
+		targetId: alertId || 'export',
+		targetName: '处置时间线',
+		detail: `导出处置时间线数据，共${events.length}条记录，格式：${format}`
+	});
+
+	return csv;
+}
+
+export function downloadDisposalTimeline(alertId?: string) {
+	const csv = exportDisposalTimeline(alertId);
+	if (csv) {
+		const filename = `处置时间线_${alertId ? '告警_' + alertId : '全部'}_${getToday()}.csv`;
+		downloadCSVUtil(csv, filename);
+	}
+}
+
+export const currentUserNotifications = derived(
+	[notifications, currentUserId],
+	([$notifs, $userId]) => $notifs.filter(n => n.userId === $userId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+);
+
+export const filteredAlertRules = derived(
+	[alertRules, currentMuseumId, currentUser],
+	([$rules, $museumId, $user]) => {
+		if ($user?.role === '系统管理员') return $rules;
+		return $rules.filter(r => !r.museumId || r.museumId === $museumId);
+	}
+);

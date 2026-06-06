@@ -12,6 +12,7 @@
 		currentMuseumId,
 		beaconLights,
 		users,
+		disposalTimelineEvents,
 		addEnvMonitorRecord,
 		updateThresholdConfig,
 		confirmEnvAlert,
@@ -20,12 +21,17 @@
 		completeRectificationTask,
 		acceptRectificationTask,
 		cancelRectificationTask,
-		assignRectificationTask,
 		addEnvMonitorPoint,
 		updateEnvMonitorPoint,
-		deleteEnvMonitorPoint
+		deleteEnvMonitorPoint,
+		addDisposalTimelineEvent,
+		escalateAlert,
+		checkAndEscalateAlerts,
+		downloadDisposalTimeline,
+		createSLARecord,
+		updateSLARecordFirstResponse
 	} from '$lib/stores';
-	import { SALT_FOG_LEVEL_OPTIONS, RISK_LEVEL_OPTIONS, ALERT_STATUS_OPTIONS, RECTIFICATION_STATUS_OPTIONS, ENV_LOCATION_TYPE_OPTIONS } from '$lib/types';
+	import { SALT_FOG_LEVEL_OPTIONS, RISK_LEVEL_OPTIONS, ALERT_STATUS_OPTIONS, RECTIFICATION_STATUS_OPTIONS, ENV_LOCATION_TYPE_OPTIONS, DISPOSAL_TIMELINE_EVENT_TYPES, ALERT_ESCALATION_LEVELS } from '$lib/types';
 	import type {
 		EnvMonitorPoint,
 		EnvAlert,
@@ -34,12 +40,16 @@
 		AlertStatus,
 		RectificationTaskStatus,
 		SaltFogLevel,
-		EnvMonitorLocationType
+		EnvMonitorLocationType,
+		DisposalTimelineEvent,
+		DisposalTimelineEventType,
+		AlertEscalationLevel
 	} from '$lib/types';
 
 	Chart.register(...registerables);
 
-	let activeTab = $state<'overview' | 'alerts' | 'threshold' | 'rectification' | 'points'>('overview');
+	let activeTab = $state<'overview' | 'alerts' | 'threshold' | 'rectification' | 'points' | 'timeline'>('overview');
+	let timelineEventTypeFilter = $state<string>('');
 	let selectedPointId = $state<string>('');
 	let searchKeyword = $state('');
 	let alertStatusFilter = $state<string>('');
@@ -109,6 +119,7 @@
 	const tabs = [
 		{ id: 'overview', label: '数据概览', icon: 'chart' },
 		{ id: 'alerts', label: '告警管理', icon: 'alert' },
+		{ id: 'timeline', label: '处置时间线', icon: 'timeline' },
 		{ id: 'threshold', label: '阈值配置', icon: 'settings' },
 		{ id: 'rectification', label: '整改任务', icon: 'task' },
 		{ id: 'points', label: '监测点管理', icon: 'location' }
@@ -301,7 +312,27 @@
 
 	function handleAlertConfirm() {
 		if (!selectedAlert) return;
+		const oldStatus = selectedAlert.status;
 		confirmEnvAlert(selectedAlert.id, alertForm.status, alertForm.remark);
+
+		addDisposalTimelineEvent({
+			alertId: selectedAlert.id,
+			eventType: '告警确认',
+			title: `告警${alertForm.status}`,
+			description: alertForm.remark || `告警状态从${oldStatus}变更为${alertForm.status}`,
+			fromStatus: oldStatus,
+			toStatus: alertForm.status
+		});
+
+		if (oldStatus === '待处理') {
+			createSLARecord({
+				taskId: selectedAlert.id,
+				taskType: '告警响应',
+				riskLevel: selectedAlert.alertLevel
+			});
+			updateSLARecordFirstResponse(selectedAlert.id, new Date().toISOString().replace('T', ' ').slice(0, 19));
+		}
+
 		selectedAlert = $envAlerts.find(a => a.id === selectedAlert?.id) || null;
 	}
 
@@ -619,6 +650,78 @@
 	const canAcceptTask = $derived(() => {
 		return $currentUser?.role === '馆区管理员' || $currentUser?.role === '系统管理员';
 	});
+
+	const canEscalateAlert = $derived(() => {
+		return $currentUser?.role === '馆区管理员' || $currentUser?.role === '系统管理员';
+	});
+
+	const filteredTimelineEvents = $derived<DisposalTimelineEvent[]>(() => {
+		let result = [...$disposalTimelineEvents];
+		if ($currentUser?.role !== '系统管理员') {
+			result = result.filter(e => e.museumId === $currentMuseumId);
+		}
+		if (selectedPointId) {
+			const pointAlerts = $envAlerts.filter(a => a.pointId === selectedPointId).map(a => a.id);
+			result = result.filter(e => e.alertId && pointAlerts.includes(e.alertId));
+		}
+		if (timelineEventTypeFilter) {
+			result = result.filter(e => e.eventType === timelineEventTypeFilter);
+		}
+		return result.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+	});
+
+	const alertTimelineEvents = $derived<DisposalTimelineEvent[]>(() => {
+		if (!selectedAlert) return [];
+		return $disposalTimelineEvents
+			.filter(e => e.alertId === selectedAlert!.id)
+			.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+	});
+
+	const alertTimelineEventsPreview = $derived<DisposalTimelineEvent[]>(() => {
+		return alertTimelineEvents.slice(0, 3);
+	});
+
+	function handleExportTimeline(alertId?: string) {
+		downloadDisposalTimeline(alertId);
+	}
+
+	function handleEscalateAlert(alertId: string) {
+		const currentLevel = getCurrentEscalationLevel(alertId);
+		const nextLevel = (currentLevel + 1) as AlertEscalationLevel;
+		if (nextLevel > 5) {
+			alert('告警已达到最高升级级别');
+			return;
+		}
+		if (confirm(`确定要将告警升级至${nextLevel}级吗？`)) {
+			escalateAlert(alertId, nextLevel);
+			selectedAlert = $envAlerts.find(a => a.id === alertId) || null;
+		}
+	}
+
+	function getCurrentEscalationLevel(alertId: string): number {
+		const events = $disposalTimelineEvents.filter(
+			e => e.alertId === alertId && e.eventType === '告警升级'
+		);
+		if (events.length === 0) return 0;
+		return Math.max(...events.map(e => e.escalationLevel || 0));
+	}
+
+	function getTimelineEventIconClass(eventType: DisposalTimelineEventType) {
+		switch (eventType) {
+			case '告警产生': return 'bg-red-100 text-red-600';
+			case '告警确认': return 'bg-blue-100 text-blue-600';
+			case '告警升级': return 'bg-orange-100 text-orange-600';
+			case '创建整改': return 'bg-amber-100 text-amber-700';
+			case '开始整改': return 'bg-yellow-100 text-yellow-700';
+			case '完成整改': return 'bg-green-100 text-green-600';
+			case '整改验收': return 'bg-emerald-100 text-emerald-600';
+			case '应急会商': return 'bg-purple-100 text-purple-600';
+			case '任务派发': return 'bg-indigo-100 text-indigo-600';
+			case '状态变更': return 'bg-gray-100 text-gray-600';
+			case '备注记录': return 'bg-gray-100 text-gray-500';
+			default: return 'bg-gray-100 text-gray-600';
+		}
+	}
 </script>
 
 <div class="space-y-6">
@@ -698,6 +801,10 @@
 							{:else if tab.icon === 'task'}
 								<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+								</svg>
+							{:else if tab.icon === 'timeline'}
+								<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
 								</svg>
 							{:else if tab.icon === 'location'}
 								<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1156,6 +1263,95 @@
 								{/if}
 							</div>
 						</div>
+
+					{:else if activeTab === 'timeline'}
+						<div class="space-y-4">
+							<div class="flex flex-wrap justify-between items-center gap-3">
+								<select
+									bind:value={timelineEventTypeFilter}
+									class="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none"
+								>
+									<option value="">全部事件类型</option>
+									{#each DISPOSAL_TIMELINE_EVENT_TYPES as type}
+										<option value={type}>{type}</option>
+									{/each}
+								</select>
+
+								<button
+									on:click={() => handleExportTimeline()}
+									class="inline-flex items-center gap-2 px-4 py-2 bg-amber-700 text-white rounded-lg hover:bg-amber-800 transition-colors text-sm font-medium"
+								>
+									<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+									</svg>
+									导出处置记录
+								</button>
+							</div>
+
+							<div class="bg-white border border-gray-200 rounded-xl p-6">
+								{#if filteredTimelineEvents.length > 0}
+									<div class="relative">
+										<div class="absolute left-4 top-0 bottom-0 w-0.5 bg-amber-200"></div>
+										<div class="space-y-6">
+											{#each filteredTimelineEvents as event}
+												<div class="relative pl-12">
+													<div class="absolute left-0 w-8 h-8 rounded-full flex items-center justify-center {getTimelineEventIconClass(event.eventType)}">
+														<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+															{#if event.eventType === '告警产生'}
+																<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+															{:else if event.eventType === '告警确认'}
+																<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+															{:else if event.eventType === '告警升级'}
+																<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+															{:else if event.eventType === '创建整改' || event.eventType === '任务派发'}
+																<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+															{:else if event.eventType === '开始整改'}
+																<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+																<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+															{:else if event.eventType === '完成整改' || event.eventType === '整改验收'}
+																<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+															{:else if event.eventType === '应急会商'}
+																<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+															{:else}
+																<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+															{/if}
+														</svg>
+													</div>
+													<div class="bg-gray-50 rounded-lg p-4 hover:bg-amber-50 transition-colors">
+														<div class="flex items-start justify-between mb-2">
+															<div>
+																<h4 class="font-medium text-gray-800">{event.title}</h4>
+																<span class="inline-block mt-1 px-2 py-0.5 text-xs rounded-full {getTimelineEventIconClass(event.eventType)}">
+																	{event.eventType}
+																	{#if event.escalationLevel}
+																		· {event.escalationLevel}级
+																	{/if}
+																</span>
+															</div>
+															<span class="text-xs text-gray-500">{event.timestamp}</span>
+														</div>
+														<p class="text-sm text-gray-600 mb-2">{event.description}</p>
+														<div class="flex items-center gap-4 text-xs text-gray-500">
+															<span>操作人：{event.operatorName || '系统'}</span>
+															{#if event.operatorRole}
+																<span>角色：{event.operatorRole}</span>
+															{/if}
+														</div>
+													</div>
+												</div>
+											{/each}
+										</div>
+									</div>
+								{:else}
+									<div class="p-12 text-center text-gray-500">
+										<svg xmlns="http://www.w3.org/2000/svg" class="w-16 h-16 mx-auto text-gray-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+										</svg>
+										<p>暂无处置时间线记录</p>
+									</div>
+								{/if}
+							</div>
+						</div>
 					{/if}
 				</div>
 			</div>
@@ -1311,6 +1507,62 @@
 							</div>
 						</div>
 					{/if}
+
+					<div>
+						<div class="flex items-center justify-between mb-2">
+							<p class="text-xs text-gray-500">处置时间线</p>
+							<button
+								on:click={() => { showAlertModal = false; activeTab = 'timeline'; }}
+								class="text-xs text-amber-600 hover:text-amber-800 transition-colors"
+							>
+								查看全部 →
+							</button>
+						</div>
+						<div class="bg-gray-50 rounded-lg p-3 max-h-40 overflow-y-auto">
+							{#if alertTimelineEventsPreview.length > 0}
+								<div class="space-y-2">
+									{#each alertTimelineEventsPreview as event}
+										<div class="flex items-start gap-2 text-xs">
+											<span class="w-2 h-2 rounded-full bg-amber-500 mt-1.5 flex-shrink-0"></span>
+											<div>
+												<span class="font-medium text-gray-700">{event.title}</span>
+												<span class="text-gray-400 ml-2">{event.timestamp.slice(5, 16)}</span>
+												<p class="text-gray-500 mt-0.5">{event.description}</p>
+											</div>
+										</div>
+									{/each}
+								</div>
+							{:else}
+								<p class="text-xs text-gray-400 text-center py-2">暂无处置记录</p>
+							{/if}
+						</div>
+					</div>
+
+					<div class="flex gap-2">
+						<button
+							on:click={() => handleExportTimeline(selectedAlert.id)}
+							class="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+						>
+							<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+							</svg>
+							导出处置记录
+						</button>
+						{#if canEscalateAlert && selectedAlert.status !== '已确认' && selectedAlert.status !== '已忽略'}
+							<button
+								on:click={() => handleEscalateAlert(selectedAlert.id)}
+								class="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-colors"
+							>
+								<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+								</svg>
+								手动升级
+								{#if getCurrentEscalationLevel(selectedAlert.id) > 0}
+									({getCurrentEscalationLevel(selectedAlert.id)}级)
+								{/if}
+							</button>
+						{/if}
+					</div>
 
 					{#if canConfirmAlert && selectedAlert.status !== '已确认' && selectedAlert.status !== '已忽略'}
 						<div class="border-t border-gray-200 pt-4 space-y-3">
