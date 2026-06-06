@@ -23,6 +23,7 @@
 		manufactureYear: 0,
 		material: '',
 		originalSeaArea: '',
+		museumId: '',
 		lampshadeStatus: '完好' as BeaconLight['lampshadeStatus'],
 		lightSourceStatus: '正常' as BeaconLight['lightSourceStatus'],
 		exhibitionStatus: '库房存储' as BeaconLight['exhibitionStatus'],
@@ -50,6 +51,7 @@
 			form.manufactureYear = light.manufactureYear;
 			form.material = light.material;
 			form.originalSeaArea = light.originalSeaArea;
+			form.museumId = light.museumId;
 			form.lampshadeStatus = light.lampshadeStatus;
 			form.lightSourceStatus = light.lightSourceStatus;
 			form.exhibitionStatus = light.exhibitionStatus;

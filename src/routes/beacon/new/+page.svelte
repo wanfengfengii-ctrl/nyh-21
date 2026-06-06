@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { addBeaconLight, beaconLights } from '$lib/stores';
+	import { addBeaconLight, beaconLights, currentMuseumId } from '$lib/stores';
 	import { validateBeaconLight } from '$lib/validation';
 	import {
 		MATERIAL_OPTIONS,
@@ -19,10 +19,15 @@
 		manufactureYear: 0,
 		material: '',
 		originalSeaArea: '',
+		museumId: '',
 		lampshadeStatus: '完好' as BeaconLight['lampshadeStatus'],
 		lightSourceStatus: '正常' as BeaconLight['lightSourceStatus'],
 		exhibitionStatus: '库房存储' as BeaconLight['exhibitionStatus'],
 		exhibitionLocation: ''
+	});
+
+	$effect(() => {
+		form.museumId = $currentMuseumId;
 	});
 
 	function handleSubmit(e: Event) {
