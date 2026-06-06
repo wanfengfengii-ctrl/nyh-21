@@ -35,9 +35,10 @@
 
 	let maintenanceForm = $state({
 		date: getToday(),
-		type: '常规维护' as const,
+		type: '常规维护' as MaintenanceRecord['type'],
 		description: '',
-		operator: ''
+		operator: '',
+		replaceReason: ''
 	});
 	let maintenanceErrors = $state<string[]>([]);
 
@@ -85,7 +86,7 @@
 	}
 
 	function openMaintenanceModal() {
-		maintenanceForm = { date: getToday(), type: '常规维护', description: '', operator: '' };
+		maintenanceForm = { date: getToday(), type: '常规维护', description: '', operator: '', replaceReason: '' };
 		maintenanceErrors = [];
 		showMaintenanceModal = true;
 	}
@@ -514,6 +515,14 @@
 						<textarea bind:value={maintenanceForm.description} rows={3}
 							class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none resize-none"></textarea>
 					</div>
+					{#if maintenanceForm.type === '光源更换'}
+						<div>
+							<label class="block text-sm font-medium text-gray-700 mb-1">更换原因 *</label>
+							<textarea bind:value={maintenanceForm.replaceReason} rows={2}
+								class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none resize-none"
+								placeholder="请填写光源更换的原因"></textarea>
+						</div>
+					{/if}
 					<div>
 						<label class="block text-sm font-medium text-gray-700 mb-1">操作人员</label>
 						<input type="text" bind:value={maintenanceForm.operator}

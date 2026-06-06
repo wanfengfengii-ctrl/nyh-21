@@ -56,8 +56,8 @@ export function validateBeaconLight(
 		errors.push('原使用海域不能为空');
 	}
 
-	if (light.lampshadeStatus === '破损' && light.exhibitionStatus === '可展出') {
-		errors.push('灯罩破损时不能标记为可展出');
+	if (light.lampshadeStatus === '破损' && (light.exhibitionStatus === '可展出' || light.exhibitionStatus === '展出中')) {
+		errors.push('灯罩破损时不能标记为可展出或展出中');
 	}
 
 	return { valid: errors.length === 0, errors };
@@ -82,6 +82,10 @@ export function validateMaintenanceRecord(record: Partial<MaintenanceRecord>): V
 
 	if (!record.operator || record.operator.trim() === '') {
 		errors.push('操作人员不能为空');
+	}
+
+	if (record.type === '光源更换' && (!record.replaceReason || record.replaceReason.trim() === '')) {
+		errors.push('光源更换必须记录更换原因');
 	}
 
 	return { valid: errors.length === 0, errors };
@@ -142,8 +146,8 @@ export function validateExhibitionStatusChange(
 ): ValidationResult {
 	const errors: string[] = [];
 
-	if (toStatus === '可展出' && lampshadeStatus === '破损') {
-		errors.push('灯罩破损时不能标记为可展出');
+	if ((toStatus === '可展出' || toStatus === '展出中') && lampshadeStatus === '破损') {
+		errors.push('灯罩破损时不能标记为可展出或展出中');
 	}
 
 	if (fromStatus === toStatus) {

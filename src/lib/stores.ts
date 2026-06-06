@@ -182,7 +182,32 @@ export function addMaintenanceRecord(record: Omit<MaintenanceRecord, 'id'>) {
 export function addLampshadeInspection(inspection: Omit<LampshadeInspection, 'id'>) {
 	const newInspection: LampshadeInspection = { ...inspection, id: generateId() };
 	lampshadeInspections.update((inspections) => [...inspections, newInspection]);
-	updateBeaconLight(inspection.beaconLightId, { lampshadeStatus: inspection.status });
+
+	const updates: Partial<BeaconLight> = { lampshadeStatus: inspection.status };
+	if (inspection.status === '破损') {
+		let fromStatus: ExhibitionStatus = '库房存储';
+		beaconLights.update((lights) =>
+			lights.map((l) => {
+				if (l.id === inspection.beaconLightId) {
+					fromStatus = l.exhibitionStatus;
+					return { ...l, ...updates, exhibitionStatus: '不可展出' as const, updatedAt: getToday() };
+				}
+				return l;
+			})
+		);
+		const history: Omit<ExhibitionStatusHistory, 'id'> = {
+			beaconLightId: inspection.beaconLightId,
+			date: getToday(),
+			fromStatus,
+			toStatus: '不可展出',
+			operator: inspection.inspector,
+			remark: '灯罩检查发现破损，自动标记为不可展出'
+		};
+		exhibitionStatusHistories.update((histories) => [...histories, { ...history, id: generateId() }]);
+	} else {
+		updateBeaconLight(inspection.beaconLightId, updates);
+	}
+
 	return newInspection;
 }
 

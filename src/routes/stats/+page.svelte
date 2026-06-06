@@ -41,25 +41,16 @@
 
 	function getMonthlyData(records: MaintenanceRecord[]) {
 		const monthMap: Record<string, number> = {};
-		const now = new Date();
-		const currentYear = now.getFullYear();
-		
-		for (let i = 0; i < 12; i++) {
-			const month = String(i + 1).padStart(2, '0');
-			monthMap[`${currentYear}-${month}`] = 0;
-		}
 
 		records.forEach(r => {
-			if (r.date.startsWith(String(currentYear))) {
-				const key = r.date.slice(0, 7);
-				monthMap[key] = (monthMap[key] || 0) + 1;
-			}
+			const key = r.date.slice(0, 7);
+			monthMap[key] = (monthMap[key] || 0) + 1;
 		});
 
 		const sortedKeys = Object.keys(monthMap).sort();
 		const labels = sortedKeys.map(k => {
-			const [, m] = k.split('-');
-			return `${parseInt(m)}月`;
+			const [y, m] = k.split('-');
+			return `${y}年${parseInt(m)}月`;
 		});
 		const data = sortedKeys.map(k => monthMap[k]);
 
