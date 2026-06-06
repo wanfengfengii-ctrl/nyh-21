@@ -1,5 +1,5 @@
 import { writable, derived, get } from 'svelte/store';
-import { generateId, getToday, validateBeaconLight, checkBorrowOverdue, isDateBefore } from './validation';
+import { generateId, getToday, validateBeaconLight, checkBorrowOverdue, isDateBefore, getDefaultExhibitionStatus } from './validation';
 import type {
 	BeaconLight,
 	MaintenanceRecord,
@@ -1112,6 +1112,7 @@ export function createRepairOrder(data: Omit<RepairOrder, 'id' | 'status' | 'cre
 export function assignRepairOrder(orderId: string, assigneeId: string) {
 	const assignee = get(users).find(u => u.id === assigneeId);
 	if (!assignee) return false;
+	if (assignee.role !== '修复师') return false;
 
 	repairOrders.update(orders =>
 		orders.map(o => o.id === orderId
@@ -1186,9 +1187,11 @@ export function acceptRepair(orderId: string, result: string) {
 
 	const order = get(repairOrders).find(o => o.id === orderId);
 	if (order) {
+		const light = get(beaconLights).find(l => l.id === order.beaconLightId);
+		const defaultStatus = light ? getDefaultExhibitionStatus(light.lampshadeStatus) : '库房存储';
 		beaconLights.update(lights =>
 			lights.map(l => l.id === order.beaconLightId
-				? { ...l, isUnderRepair: false, currentRepairOrderId: undefined, exhibitionStatus: '可展出', updatedAt: getToday() }
+				? { ...l, isUnderRepair: false, currentRepairOrderId: undefined, exhibitionStatus: defaultStatus, updatedAt: getToday() }
 				: l
 			)
 		);
@@ -1213,9 +1216,11 @@ export function cancelRepairOrder(orderId: string, reason: string) {
 
 	const order = get(repairOrders).find(o => o.id === orderId);
 	if (order) {
+		const light = get(beaconLights).find(l => l.id === order.beaconLightId);
+		const defaultStatus = light ? getDefaultExhibitionStatus(light.lampshadeStatus) : '库房存储';
 		beaconLights.update(lights =>
 			lights.map(l => l.id === order.beaconLightId
-				? { ...l, isUnderRepair: false, currentRepairOrderId: undefined, updatedAt: getToday() }
+				? { ...l, isUnderRepair: false, currentRepairOrderId: undefined, exhibitionStatus: defaultStatus, updatedAt: getToday() }
 				: l
 			)
 		);

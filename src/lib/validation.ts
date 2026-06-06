@@ -1,4 +1,4 @@
-import type { BeaconLight, MaintenanceRecord, LampshadeInspection, LightSourceReplacement, ExhibitionStatusHistory, BorrowRequest, RepairOrder } from './types';
+import type { BeaconLight, MaintenanceRecord, LampshadeInspection, LightSourceReplacement, ExhibitionStatusHistory, BorrowRequest, RepairOrder, LampshadeStatus, ExhibitionStatus } from './types';
 
 export function generateId(): string {
 	return Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
@@ -281,4 +281,13 @@ export function getBorrowDaysRemaining(request: BorrowRequest): number {
 	if (request.status !== '借展中') return 0;
 	const today = getToday();
 	return getDaysBetween(today, request.plannedEndDate);
+}
+
+export function getDefaultExhibitionStatus(lampshadeStatus: LampshadeStatus): ExhibitionStatus {
+	if (lampshadeStatus === '破损') {
+		return '不可展出';
+	} else if (lampshadeStatus === '裂纹') {
+		return '维护中';
+	}
+	return '可展出';
 }
