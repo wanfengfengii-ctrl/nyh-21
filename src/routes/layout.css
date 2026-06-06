@@ -1,0 +1,17 @@
+@import 'tailwindcss';
+@import '@skeletonlabs/skeleton';
+
+@theme {
+	--color-primary: #8b5a2b;
+	--color-secondary: #2c5f2d;
+	--color-accent: #d4a574;
+	--color-surface: #f5f0e6;
+	--color-surface-alt: #ebe3d4;
+	--color-border-subtle: #d4c9b5;
+}
+
+body {
+	background-color: var(--color-surface);
+	color: #3a3a3a;
+	font-family: system-ui, -apple-system, sans-serif;
+}
